@@ -1,0 +1,15 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Node (in case tooling gets added later)
+node_modules/
+npm-debug.log*
+
+# Local scratch / exported plans
+*.local.json
