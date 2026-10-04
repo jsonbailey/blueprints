@@ -13,3 +13,6 @@ npm-debug.log*
 
 # Local scratch / exported plans
 *.local.json
+
+# Claude Code agent worktrees
+.claude/
