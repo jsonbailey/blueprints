@@ -60,7 +60,7 @@ thickness introduces — see each item's section for the reasoning.)
 | `js/inspector.js` | `renderInspector` as a lookup table keyed by selection type |
 | `js/app.js` | Pointer/key event dispatch (routes to `js/tools.js` handlers), DOM wiring, startup |
 | `js/tools.js` *(new, item 2)* | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, replacing the `drag`/`wallDrag`/`roomDrag`/`pan` globals. Holds the rectangle and freeform room-drawing tools. Build this refactor as the **first commit of item 2** — items 2/3/5 add 8+ interaction modes, too many for ad-hoc if-chains. |
-| `js/catalog.js` *(new, item 3, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for fixtures (item 3) and openings (item 5). Load before `render.js`/`inspector.js`. |
+| `js/catalog.js` *(new, item 4, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for wall openings (item 4) and room fixtures (item 5). Load before `render.js`/`inspector.js`. |
 | `js/geometry.js` *(new, optional, item 4)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
 | `js/storage.js` *(new, item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
 | `js/nav.js` *(new, item 7)* | Hamburger menu / project switcher. |
@@ -283,14 +283,28 @@ item 4; `object.anchor` in item 5 references this same wall-key identity).
 ## Item 4 — wall openings
 
 Doors (swing direction + a flip/mirror option for left/right-handed),
-windows, and sliding doors. Each has an offset along its host wall, measured
-from **the lower id of the wall's sorted endpoint pair** (stable regardless
-of which room's loop defined `w.a`/`w.b`). Built entirely on item 3's
-`wallProps`/`remapWallRefs` design above — no new wall-identity mechanism
-needed. (Open-concept "no wall" edges are a `wallProps` flag from item 3,
-not an opening type — see above.)
+windows, sliding doors, and **garage doors** (same mechanism as a door —
+wide, typically no swing arc to draw, just an opening-width marker on the
+wall — but its own catalog entry since it reads differently on a plan and
+is wide enough that fit-checking against a parked car/truck in item 5's
+catalog is the whole point of having it). Each has an offset along its host
+wall, measured from **the lower id of the wall's sorted endpoint pair**
+(stable regardless of which room's loop defined `w.a`/`w.b`). Built entirely
+on item 3's `wallProps`/`remapWallRefs` design above — no new wall-identity
+mechanism needed. (Open-concept "no wall" edges are a `wallProps` flag from
+item 3, not an opening type — see above.)
 
 ## Item 5 — room-relative object placement
+
+**Catalog** (`js/catalog.js`, extensible array — adding an entry should
+never require touching placement/rendering logic elsewhere): cabinets, sink,
+stove, toilet, shower, tub, table, stairs, and **car**/**truck** — vehicles
+are exactly as "place it and see if it fits" as any other fixture, just
+bigger, and are the main point of having a garage-door catalog entry (item
+4) to check clearance against. Use realistic default dimensions a user can
+resize per-instance (the `w`/`d` fields below are per-object, not fixed by
+type): roughly 6' x 15' for a car, 6.5' x 20' for a truck, as sane
+defaults — not load-bearing numbers, just a reasonable starting box.
 
 **Sequenced after items 3-4, not before** (revised from an earlier draft of
 this roadmap): a wall-anchored object's position depends on the wall's
