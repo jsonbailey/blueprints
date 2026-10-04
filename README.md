@@ -1,8 +1,8 @@
 # Plan Editor
 
-An interactive, self-contained floor-plan editor — SVG + vanilla JavaScript,
-no build step, no server. Open `index.html` directly, or use it hosted on
-GitHub Pages:
+An interactive floor-plan editor — SVG + vanilla JavaScript, no build step,
+no server. Open `index.html` from the project folder (the `css/` and `js/`
+folders need to travel with it), or use it hosted on GitHub Pages:
 
 **https://jsonbailey.github.io/blueprints/**
 
