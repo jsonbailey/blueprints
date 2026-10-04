@@ -13,17 +13,44 @@ function activeLevel(){ return data.levels.find(l=>l.id===data.activeLevelId) ||
    shadow beneath the active level (when opts.shadow is on). */
 function otherLevels(){ const a=activeLevel(); return data.levels.filter(l=>l!==a && l.visible); }
 
-function snapshot(){
-  history.push(JSON.stringify(stripIdx(data)));
+/* Single chokepoint for "an undoable change happened": both the eager
+   snapshot() path and the lazy commitCaptured() path (used by drag gestures)
+   push through here, so anything that needs to react to "something changed"
+   (e.g. a future debounced local-storage autosave) has exactly one place to
+   hook, regardless of which of the two commit mechanisms triggered it. */
+function pushHistory(serializedState){
+  history.push(serializedState);
   if(history.length>120) history.shift();
+}
+function snapshot(){
+  pushHistory(JSON.stringify(stripIdx(data)));
 }
 /* Lazy commit: capture state at gesture start, only push to history once the
    user actually moves something — so a plain click never pollutes undo. */
 function captureState(){ return JSON.stringify(stripIdx(data)); }
 function commitCaptured(d){
-  if(d && !d.committed){ history.push(d.preState); if(history.length>120) history.shift(); d.committed=true; }
+  if(d && !d.committed){ pushHistory(d.preState); d.committed=true; }
+}
+/* Re-render chokepoint: the other half of "something changed" — re-draws the
+   plan and the inspector. Also called directly (without snapshot()) by
+   callers that mutate transient UI state (selection, level switch) that
+   isn't itself undoable. */
+function markDirty(){
+  render(); renderInspector();
+}
+/* Wrap a single undoable mutation: snapshot the pre-state, run the mutation,
+   then re-render. This is the one place most call sites should route
+   "this should be undoable and should trigger a re-render" through, instead
+   of each repeating `snapshot(); <mutate>; render(); renderInspector();`
+   by hand. */
+function commit(mutateFn){
+  snapshot();
+  mutateFn();
+  markDirty();
 }
 function undo(){
   if(!history.length) return;
-  loadData(JSON.parse(history.pop())); sel={type:null,id:null}; render(); renderInspector();
+  data = loadData(JSON.parse(history.pop()));
+  sel={type:null,id:null};
+  markDirty();
 }
