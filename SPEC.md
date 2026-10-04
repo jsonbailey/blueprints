@@ -2,10 +2,12 @@
 
 ## What it is
 
-A single self-contained HTML file (`index.html`) — SVG + vanilla
-JavaScript, with the [polygon-clipping](https://github.com/mfogel/polygon-clipping)
-library vendored inline — that runs locally by double-clicking. No install,
-no server, no build step, works offline.
+A static multi-file app (`index.html` plus its `css/` and `js/` folders) —
+SVG + vanilla JavaScript, with the [polygon-clipping](https://github.com/mfogel/polygon-clipping)
+library vendored under `js/vendor/` — that runs locally by double-clicking
+`index.html` from the project folder (the folder has to travel together; it's
+no longer a single file you can email on its own). No install, no server, no
+build step, works offline.
 
 It's an interactive, editable floor-plan tool with any number of
 **levels** sharing one coordinate frame. It ships with **no default floor
