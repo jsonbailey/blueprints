@@ -302,10 +302,17 @@ function renderLevelPanel(){
       const row=document.createElement("div");
       row.className="level-row"; row.dataset.level=l.id;
       row.setAttribute("role","menuitemradio");
+      // A real double-click fires two "click" events before "dblclick" (click,
+      // click, dblclick is standard DOM event order) — switching + closing the
+      // panel on that first click would hide the panel before dblclick ever
+      // fires, and focusing a hidden (display:none) element is a silent no-op,
+      // so double-click-to-rename would never visibly work. Defer the
+      // single-click action briefly and cancel it if a dblclick follows.
       row.onclick=(e)=>{
         if(e.target.closest(".level-eye")) return;
         if(l.id===_editingLevelId) return;
-        setLevel(l.id); closeLevelPanel();
+        if(row._clickTimer){ clearTimeout(row._clickTimer); row._clickTimer=null; return; }
+        row._clickTimer = setTimeout(()=>{ row._clickTimer=null; setLevel(l.id); closeLevelPanel(); }, 250);
       };
 
       const eye=document.createElement("button");
@@ -316,7 +323,11 @@ function renderLevelPanel(){
       const name=document.createElement("span");
       name.className="level-name"; name.textContent=l.name;
       name.title="Double-click to rename";
-      name.ondblclick=(e)=>{ e.stopPropagation(); startRenameLevel(l.id, name); };
+      name.ondblclick=(e)=>{
+        e.stopPropagation();
+        if(row._clickTimer){ clearTimeout(row._clickTimer); row._clickTimer=null; }
+        startRenameLevel(l.id, name);
+      };
       row.appendChild(name);
 
       levelPanelEl.appendChild(row);
