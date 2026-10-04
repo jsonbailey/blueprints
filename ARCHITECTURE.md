@@ -83,6 +83,41 @@ thickness introduces — see each item's section for the reasoning.)
    regardless of Shift. Esc priority: cancel an active tool first, then clear
    selection.
 
+## Bug fix bundled with item 2 — connected rooms must move together
+
+**Confirmed bug in existing (shipped) behavior**, queued here rather than
+fixed immediately because the fix touches the exact whole-room-drag code in
+`js/app.js` that both the in-flight cleanup commit (0.5) and item 2's
+interaction-dispatch rewrite are already restructuring — fixing it
+separately right now risks a throwaway merge conflict.
+
+**Root cause:** dragging a room by its name (whole-room translate) and
+nudging a room (arrow keys) both currently move only that room's own
+`room.loop` points. When two rooms are welded along a shared wall, the
+shared corners belong to *both* rooms' loops — so translating one room's
+loop drags the shared corners away from the neighboring room's other
+(unshared) corners, stretching/distorting the neighbor instead of leaving
+its shape intact.
+
+**Fix:** before translating, compute the full connected component of rooms
+transitively sharing welded points with the dragged room (flood-fill /
+union-find over shared point ids across all rooms in the level — not just
+direct neighbors, since a chain of 3+ welded rooms should all move together).
+Translate every point in that unioned set by the same `{dx,dy}` delta,
+instead of just the dragged room's own loop. Apply this to both the
+whole-room drag gesture and `nudgeRoom`. **Respect locked rooms**: per the
+existing "Lock geometry" feature, a locked room's points can't be moved —
+stop the flood-fill from propagating through a point that belongs to a
+locked room (the dragged room's cluster should stop at a locked neighbor's
+shared wall, not drag it along or silently skip it).
+
+**Cross-reference for item 5 (object placement):** once this lands, a
+whole-room drag can move *multiple* rooms in one gesture. Item 5's "free
+objects carry along by the room's `{dx,dy}` on `roomDrag`/`nudgeRoom`" rule
+must apply per-room across the entire moved cluster, not just the directly-
+dragged room — otherwise furniture in a connected neighbor room would be
+left behind while its room's walls move out from under it.
+
 ## Item 2 — room-drawing hotkeys
 
 - `N`: rectangle tool. Crosshair cursor, click corner A, live preview
