@@ -94,6 +94,12 @@ thickness introduces — see each item's section for the reasoning.)
   placing a vertex toggles that lock off for a free angle. **Completes only
   by clicking back on/near the starting vertex** — no Enter/double-click
   shortcut to finish an open polyline. Esc cancels.
+- **On completing a room (either tool), immediately put the room-name field
+  into edit mode, focused and ready to type** — no extra click to select it
+  first. Apply the same fix to the existing "+ New room" button at the same
+  time (same underlying selection/inspector-render path, currently just
+  missing the focus step) — don't ship two different behaviors for
+  "a room was just created" depending on which entry point made it.
 - Implementation notes:
   - Ctrl+click triggers the native context menu on some platforms —
     `preventDefault` on `contextmenu` while a draw tool is active, and
