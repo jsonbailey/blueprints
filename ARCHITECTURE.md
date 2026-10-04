@@ -15,7 +15,8 @@ behavior belongs in SPEC.md).
    `remapWallRefs` re-keying infrastructure that items 4 and 5 both need.
    *Shipped* — its section below stays as the reference items 4-5 build on.
 4. **Wall openings** — doors/windows/sliding doors/garage doors, built on
-   item 3's `wallProps`/`remapWallRefs` infrastructure.
+   item 3's `wallProps`/`remapWallRefs` infrastructure. *Shipped* — see
+   SPEC.md; "Item 4" below keeps only what item 5 reuses.
 5. **Room-relative object placement** — furniture/fixture catalog, with
    optional wall-anchored placement (distance + position derived from a
    host wall's interior face). Depends on items 3-4 — see "Item 5" below.
@@ -41,7 +42,7 @@ messages.)
 | `js/inspector.js` | `renderInspector` as a lookup table keyed by selection type |
 | `js/app.js` | Pointer/key event dispatch, DOM wiring, startup |
 | `js/tools.js` | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, covering corner/wall/room drags, pan, and the `N`/`Shift+N` room-drawing tools. Items 3 and 5 add more `kind`s here (a pick-wall mode, etc.) rather than growing `js/app.js`'s dispatch. |
-| `js/catalog.js` *(item 4, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for wall openings (item 4) and room fixtures (item 5). Load before `render.js`/`inspector.js`. |
+| `js/catalog.js` | Extensible array of placeable types. Today `OPENING_TYPES` (`{type, label, defaultWidth, fields, draw(g,k)}`, item 4); item 5 adds room fixtures (`{type, label, w, d, draw}`). Loaded after `state.js`, before `render.js`/`inspector.js`. |
 | `js/geometry.js` *(optional, item 3)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
 | `js/storage.js` *(item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
 | `js/nav.js` *(item 7)* | Hamburger menu / project switcher. |
@@ -57,9 +58,8 @@ UI, band rendering at real thickness, and the interior geometry
 (`offsetPolygon` / `roomInterior` / `interiorArea` / `wallSides` in
 `js/model.js`: interior-offset polygons, per-side dimension labels,
 interior area, miter-clipped bands). What remains here is reference for
-items 4-5: item 4 must fill in the `openings` TODOs in
-`remapWallRefs`/`mergeWallProps` (split-by-position, concatenating on
-merge), and item 5's anchors measure from the interior face that
+item 5 (item 4 filled in the `openings` handling in `remapWallRefs`), and
+item 5's anchors measure from the interior face that
 `roomInterior(f, room).edges[i]` already exposes (`a`, `b`, inward `n`,
 `half`).
 
@@ -116,22 +116,23 @@ item 4; `object.anchor` in item 5 references this same wall-key identity).
     offset data.
   - *Accepted gaps* (document, don't solve): openings are lost on edges that
     `cutRoom` recreates; openings/anchors can't span a T-junction.
-- **Selection model:** `sel` needs to address an opening by
-  `{wallKey, openingId}`. `renderInspector`'s lookup table gets `object` and
-  `opening` as two more entries.
+- **Selection model:** an opening is `sel = {type:"opening", id, wallKey}`
+  (shipped); item 5 adds an `object` entry to `renderInspector`'s table.
 
 ## Item 4 — wall openings
 
-Doors (swing direction + a flip/mirror option for left/right-handed),
-windows, sliding doors, and garage doors (same mechanism as a door — wide,
-typically no swing arc to draw, just an opening-width marker on the wall —
-but its own catalog entry since it reads differently on a plan and is the
-clearance being checked against a parked car/truck from item 5's catalog).
-Each has an offset along its host wall, measured from the lower id of the
-wall's sorted endpoint pair (stable regardless of which room's loop defined
-`w.a`/`w.b`). Built entirely on item 3's `wallProps`/`remapWallRefs` design —
-no new wall-identity mechanism needed. (Open-concept "no wall" edges are a
-`wallProps` flag from item 3, not an opening type.)
+**Status:** shipped (see SPEC.md). What item 5 should reuse rather than
+rebuild, all in `js/model.js`:
+
+- `wallFrame(f, key)` / `alongToWorld` / `worldToAlong` — the lo→hi frame an
+  `along` offset is measured in (lo = the lower id of the SORTED key, not
+  `w.a`).
+- `rebaseAlong(f, fromKey, along, toKey)` — maps an offset through a re-key
+  geometrically (world point → projection), which is how `remapWallRefs`
+  handles orientation flips and positional shifts for split, merge and
+  detach. Anchors should go through the same function in the same branches.
+- Split assigns by CENTER (anchors: the object's center), matching what
+  item 5 specifies.
 
 ## Item 5 — room-relative object placement
 
