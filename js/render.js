@@ -31,6 +31,7 @@ function render(){
   if(opts.grid) drawGrid(W,H);
 
   renderLevelPanel();
+  renderWallDefaults();
 
   // shadow (every other visible level) underneath
   if(opts.shadow) otherLevels().forEach(l=>drawLevel(l, {shadow:true}));
@@ -91,22 +92,41 @@ function drawLevel(f, {shadow}){
       "stroke-dasharray": roomSel ? "4 4" : (locked ? "2 3" : "none")}));
   });
 
-  // walls
+  // walls — drawn as a band effThickness() wide (real scale), with a minimum
+  // on-screen width so very thin walls stay visible/clickable. Square caps
+  // fill rectilinear corners/T-junctions; mitered interior corners are a
+  // later item-3 task, so non-90° corners just overlap. An open (no-wall)
+  // edge gets a thin dashed line + a wider invisible hit target on the
+  // active level, and isn't drawn at all in the shadow view.
   f.walls.forEach(w=>{
     const a=ptOf(f,w.a), b=ptOf(f,w.b);
     const [ax,ay]=toScreen(a.x,a.y),[bx,by]=toScreen(b.x,b.y);
     const isSel = !shadow && sel.type==="wall" && sel.id===w.id;
-    const line = el("line",{x1:ax,y1:ay,x2:bx,y2:by,
-      stroke: shadow ? "var(--blueprint)" : (isSel ? "var(--markup)" : "var(--graphite)"),
-      "stroke-width": shadow ? 1.5 : (isSel ? 4 : 2.6),
-      "stroke-linecap":"round",
-      "stroke-dasharray": shadow ? "1 5" : "none",
-      opacity: shadow ? 0.55 : 1});
+    const open = isOpenWall(f,w);
+    if(shadow && open) return;
+    const sw = open ? 0 : Math.max(shadow ? 1.5 : (isSel ? 4 : 2.6), effThickness(f,w)*view.scale);
+    let line, hit;
+    if(open){
+      line = el("g",{});
+      line.appendChild(el("line",{x1:ax,y1:ay,x2:bx,y2:by,
+        stroke: isSel ? "var(--markup)" : "var(--graphite-soft)",
+        "stroke-width": isSel ? 2 : 1.2, "stroke-dasharray":"6 5", "pointer-events":"none"}));
+      hit = el("line",{x1:ax,y1:ay,x2:bx,y2:by, stroke:"transparent", "stroke-width":10});
+      line.appendChild(hit);
+    } else {
+      line = hit = el("line",{x1:ax,y1:ay,x2:bx,y2:by,
+        stroke: shadow ? "var(--blueprint)" : (isSel ? "var(--markup)" : "var(--graphite)"),
+        "stroke-width": sw,
+        "stroke-linecap": shadow ? "round" : "square",
+        // shadow keeps its dotted look at any width: dots one band wide
+        "stroke-dasharray": shadow ? `${Math.max(1,sw*0.2)} ${Math.max(5,sw*1.8)}` : "none",
+        opacity: shadow ? 0.55 : 1});
+    }
     if(!shadow){
       const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
-      line.style.cursor = horiz ? "ns-resize" : "ew-resize";
-      line.dataset.wall=w.id;
-      line.addEventListener("pointerdown",(e)=>startDragWall(e,w.id));
+      hit.style.cursor = horiz ? "ns-resize" : "ew-resize";
+      hit.dataset.wall=w.id;
+      hit.addEventListener("pointerdown",(e)=>startDragWall(e,w.id));
     }
     gWalls.appendChild(line);
 
@@ -123,7 +143,8 @@ function drawLevel(f, {shadow}){
         if(rr){
           const c=centroid(f,rr.loop); const [csx,csy]=toScreen(c.x,c.y);
           let vx=csx-mx, vy=csy-my; const vl=Math.hypot(vx,vy)||1; vx/=vl; vy/=vl;
-          lx=mx+vx*11; ly=my+vy*11;
+          const off=11+sw/2;   // clear the drawn band, not just the centerline
+          lx=mx+vx*off; ly=my+vy*off;
         }
         const t = el("text",{x:lx,y:ly, fill: isSel?"var(--markup)":"var(--graphite-soft)",
           "font-family":"var(--mono)","font-size":11,"text-anchor":"middle","dominant-baseline":"central",

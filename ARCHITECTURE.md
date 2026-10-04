@@ -48,6 +48,16 @@ messages.)
 
 ## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 
+**Status:** the data model and infrastructure half has shipped (see
+SPEC.md): `wallKey`, `wallProps`, `effThickness`, the `open` flag,
+`remapWallRefs` threaded through divideWall / insertPointOnWall / weldPoints
+/ deletePoint / detachRoom / detachCorner, orphan pruning in `deriveWalls`,
+schema v2, the inspector and level-default UI, and band rendering at real
+thickness. **Still to do:** the "Interior dimensions/area" bullet below
+(interior offsets, per-side dimension labels, interior-polygon area, mitered
+corners). Item 4 must also fill in the `openings` TODOs in
+`remapWallRefs`/`mergeWallProps` (split-by-position, concatenating on merge).
+
 `level.wallProps`, keyed by a **canonicalized endpoint-id pair** (sort the
 two point ids so the key doesn't depend on which room's loop created the
 wall — don't key off `w.a`/`w.b` directly, since `w.a` is arbitrary).

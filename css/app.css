@@ -152,6 +152,14 @@
   .pair>div{flex:1}
   .field-label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);margin-bottom:4px;display:block}
 
+  /* Wall thickness: preset dropdown + a custom-value row (inspector + the
+     level-default control in the Walls section). */
+  .thk-custom{display:flex;gap:8px;margin-top:6px}
+  .thk-custom[hidden]{display:none}
+  .thk-custom .btn{flex:0 0 auto}
+  select:disabled{opacity:.5;cursor:not-allowed}
+  .thk-src{font-family:var(--ui);font-size:11px;color:var(--ink-dim);margin-left:6px}
+
   /* Room name: double-click-in-place, same pattern as .level-name. */
   .room-name-display{
     font-family:var(--mono);font-size:13px;color:var(--ink);

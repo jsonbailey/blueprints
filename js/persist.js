@@ -7,20 +7,21 @@
    shape silently. migrations[i] upgrades a raw object from version i to i+1
    and must be pure (no globals, no id minting); it may leave level ids /
    names / `visible` unset, since loadData() fills those in afterwards. */
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 /* Per-level field list, shared by stripIdx (save/undo serialization) and
    loadData (deserialization) so the two can't drift apart — a field added to
    only one of them would silently vanish from save/undo/autosave on round
    trip. `id`/`name`/`visible` get special handling in loadData (regenerated
-   when missing/duplicate/invalid); everything else in the list is treated as
-   opaque per-level data that defaults to `[]` when absent. Future per-level
-   fields (e.g. `objects`, `wallProps`, `defaultThickness`) should be added
-   here once; if a future field isn't array-shaped (e.g. `wallProps` as a
-   dict, `defaultThickness` as a number), give it its own default in
-   loadData rather than forcing it through the `[]` convention below. */
+   when missing/duplicate/invalid); LEVEL_DATA_FIELDS are treated as opaque
+   array-shaped per-level data that defaults to `[]` when absent.
+   LEVEL_PROP_FIELDS are the non-array fields (`wallProps` is a dict keyed
+   by wallKey, `defaultThickness` a number in feet), each with its own
+   explicit normalization in loadData. Future per-level fields (e.g.
+   `objects`) should be added to one of these lists once. */
 const LEVEL_META_FIELDS = ["id","name","visible"];
 const LEVEL_DATA_FIELDS = ["points","walls","rooms"];
-const LEVEL_FIELDS = [...LEVEL_META_FIELDS, ...LEVEL_DATA_FIELDS];
+const LEVEL_PROP_FIELDS = ["wallProps","defaultThickness"];
+const LEVEL_FIELDS = [...LEVEL_META_FIELDS, ...LEVEL_DATA_FIELDS, ...LEVEL_PROP_FIELDS];
 const migrations = [
   /* 0 → 1: pre-versioning files used two fixed floors {main, basement}.
      They become two levels "Main" and "Basement" (both visible), Main active.
@@ -32,6 +33,17 @@ const migrations = [
     return {...rest,
       levels:[ {...main, name:"Main", visible:true}, {...basement, name:"Basement", visible:true} ],
       activeLevelId:null};
+  },
+  /* 1 → 2: wall thickness (ARCHITECTURE.md item 3). Every level gets an
+     empty `wallProps` (no per-wall overrides) and the baseline default
+     thickness, 2x4 + drywall = 4.5". The value is written out literally —
+     NOT read from DEFAULT_WALL_THICKNESS — so this migration keeps meaning
+     "what a v1 file meant" even if the default for new levels changes. */
+  function addWallThickness(raw){
+    const levels = Array.isArray(raw.levels)
+      ? raw.levels.map(l=>(l && typeof l==="object") ? {...l, wallProps:{}, defaultThickness:4.5/12} : l)
+      : raw.levels;
+    return {...raw, levels};
   },
 ];
 /* Upgrade a raw parsed plan object of any known version to the current
@@ -91,13 +103,33 @@ function loadData(raw){
       const v = l[k];
       out[k] = Array.isArray(v) ? v.map(item=>Array.isArray(item.loop) ? {...item, loop:[...item.loop]} : {...item}) : [];
     });
-    return indexLevel(out);
+    out.wallProps = loadWallProps(l.wallProps);
+    out.defaultThickness = isValidThickness(l.defaultThickness) ? l.defaultThickness : DEFAULT_WALL_THICKNESS;
+    return indexLevel(out);   // → deriveWalls, which also prunes wallProps keys that aren't real walls
   });
   if(!levels.length) levels.push(makeLevel("Level 1", []));
   if(!levels.some(l=>l.id===activeId)) activeId = levels[0].id;
   const result = {levels, activeLevelId:activeId};
   syncIds(result);
   return result;
+}
+
+/* Normalize a persisted wallProps dict: deep-copied (never aliases the
+   input), non-object entries dropped, an invalid `thickness` dropped, `open`
+   kept only as `true`, and the open-implies-no-thickness invariant enforced.
+   Unknown fields (e.g. item 4's `openings`) pass through untouched. */
+function loadWallProps(v){
+  const out={};
+  if(!v || typeof v!=="object" || Array.isArray(v)) return out;
+  for(const k of Object.keys(v)){
+    const e=v[k];
+    if(!e || typeof e!=="object" || Array.isArray(e)) continue;
+    const p=JSON.parse(JSON.stringify(e));
+    if(p.open!==true) delete p.open;
+    if(!isValidThickness(p.thickness) || p.open) delete p.thickness;
+    if(Object.keys(p).length) out[k]=p;
+  }
+  return out;
 }
 
 function freshData(){

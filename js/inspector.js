@@ -20,11 +20,45 @@ function renderInspector(){
   renderer(f, body);
 }
 
+/* ---------- wall-thickness picker (shared by the wall inspector and the
+   level-default control in js/app.js) ----------
+   A <select> of the standard presets (WALL_PRESETS, js/model.js) plus
+   "Custom…", optionally led by a "Use level default (X)" option, and a
+   custom-value row (text input + Set button) shown only for "Custom…". */
+function presetIdFor(t){ const p=WALL_PRESETS.find(p=>Math.abs(p.thickness-t)<1e-6); return p ? p.id : "custom"; }
+function thicknessOptionsHtml(defaultLabel){
+  return (defaultLabel!=null ? `<option value="default">${esc(defaultLabel)}</option>` : "")
+    + WALL_PRESETS.map(p=>`<option value="${p.id}">${esc(p.label)} (${fmtThickness(p.thickness)})</option>`).join("")
+    + `<option value="custom">Custom…</option>`;
+}
+/* Wire a picker. `pick(t)` is called with feet, or null for "default"; it
+   must do the commit() itself. Choosing "Custom…" only reveals the input —
+   nothing is committed until Enter / Set with a valid value. */
+function wireThicknessPicker(selEl, rowEl, inputEl, applyEl, pick){
+  selEl.onchange=()=>{
+    const v=selEl.value;
+    if(v==="custom"){ rowEl.hidden=false; inputEl.focus(); inputEl.select(); return; }
+    rowEl.hidden=true;
+    if(v==="default") pick(null);
+    else { const p=WALL_PRESETS.find(p=>p.id===v); if(p) pick(p.thickness); }
+  };
+  const apply=()=>{
+    const t=parseThickness(inputEl.value);
+    if(isNaN(t)){ setReadout("Thickness",`enter a thickness up to ${MAX_WALL_THICKNESS} ft (bare number = inches, e.g. 5.5)`); return; }
+    pick(t);
+  };
+  applyEl.onclick=apply;
+  inputEl.onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); apply(); } };
+}
+
 function renderWallInspector(f, body){
   const w=wallById(f,sel.id); if(!w){clearSel();return;}
   const a=ptOf(f,w.a), b=ptOf(f,w.b);
   const len=Math.hypot(b.x-a.x,b.y-a.y);
   const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
+  const open=isOpenWall(f,w), override=wallThicknessOverride(f,w), eff=effThickness(f,w);
+  const thkChoice = override==null ? "default" : presetIdFor(override);
+  const thkSrc = open ? "open — no wall" : (override==null ? "level default" : "override");
   body.innerHTML = `
     <div class="kicker">WALL · ${w.id}</div>
     <span class="field-label">Length</span>
@@ -42,7 +76,30 @@ function renderWallInspector(f, body){
     <div class="btngrid" style="margin-top:10px">
       <button class="btn primary" id="applyLen">Apply length</button>
       <button class="btn" id="divWall">Divide wall</button>
+    </div>
+    <div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
+      <span class="field-label">Thickness</span>
+      <div class="bigval" style="font-size:18px">${fmtThickness(eff)}<span class="thk-src">${thkSrc}</span></div>
+      <select id="thkSel" ${open?"disabled":""}>${thicknessOptionsHtml(`Use level default (${fmtThickness(f.defaultThickness)})`)}</select>
+      <div class="thk-custom" id="thkCustomRow" ${thkChoice==="custom"&&!open?"":"hidden"}>
+        <input type="text" id="thkCustom" placeholder='inches, e.g. 5.5 or 5½"' value="${override!=null&&thkChoice==="custom"?(+(override*12).toFixed(3)):""}">
+        <button class="btn" id="thkApply">Set</button>
+      </div>
+      <label class="toggle row" style="margin-top:10px"><input type="checkbox" id="wallOpen" ${open?"checked":""}><span>Open (no wall)</span></label>
+      <p class="muted" style="margin-top:4px">${open
+        ? "Open-concept edge: drawn as a dashed line, zero thickness. Uncheck to restore a wall at the level default."
+        : "Override this wall's thickness, or leave it on the level default (set in the Walls panel)."}</p>
     </div>`;
+  const thkSel=document.getElementById("thkSel");
+  thkSel.value = thkChoice;
+  wireThicknessPicker(thkSel, document.getElementById("thkCustomRow"), document.getElementById("thkCustom"),
+    document.getElementById("thkApply"),
+    t=>{
+      const cur=wallThicknessOverride(f,w);
+      if(isOpenWall(f,w) || (t==null ? cur==null : (cur!=null && Math.abs(cur-t)<1e-9))) { renderInspector(); return; }   // no-op: no undo entry
+      commit(()=>{ setWallThickness(f,w,t); });
+    });
+  document.getElementById("wallOpen").onchange=e=>{ commit(()=>{ setWallOpen(f,w,e.target.checked); }); };
   document.getElementById("endSel").value = movingEnd;
   document.getElementById("endSel").onchange = e=>{ movingEnd=e.target.value; render(); };
   const apply=()=>applyLength(w);
@@ -269,7 +326,21 @@ function deletePoint(f, id){
   snapshot();
   const delIds=new Set(willDelete.map(r=>r.id));
   f.rooms = f.rooms.filter(r=>!delIds.has(r.id));
-  f.rooms.forEach(r=>{ if(r.loop.includes(id)) r.loop = r.loop.filter(x=>x!==id); });
+  // Removing the corner merges walls prev|id and id|next into prev|next
+  // (remapWallRefs "merge"); every other edge is an identity pair so a wall
+  // already at prev|next counts as the first contributor.
+  const pairs=[];
+  f.rooms.forEach(r=>{
+    const L=r.loop, i=L.indexOf(id);
+    if(i<0){ loopWallKeys(L).forEach(k=>{ if(k) pairs.push([k,k]); }); return; }
+    const prev=L[(i-1+L.length)%L.length], next=L[(i+1)%L.length];
+    const merged = prev===next ? null : wallKey(prev,next);
+    // "first wall" for the merge = prev→id (loop order), then id→next
+    pairs.push([wallKey(prev,id), merged], [wallKey(id,next), merged]);
+    loopWallKeys(L).forEach(k=>{ if(k && !k.split("|").includes(id)) pairs.push([k,k]); });
+    r.loop = L.filter(x=>x!==id);
+  });
+  remapWallRefs(f, {kind:"merge", pairs});
   gcPoints(f); deriveWalls(f);
   return true;
 }
