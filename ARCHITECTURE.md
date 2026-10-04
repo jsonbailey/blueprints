@@ -9,7 +9,6 @@ behavior belongs in SPEC.md).
 
 ## Roadmap
 
-2. **Room-drawing hotkeys** — `N` (rectangle) / `Shift+N` (freeform) tools.
 2.5. **Unify room naming with the double-click-in-place pattern** — see
    detailed section below.
 3. **Wall thickness** — per-level default + per-wall override, standard
@@ -24,7 +23,7 @@ behavior belongs in SPEC.md).
 6. **Local storage autosave** — debounced, reuses `schemaVersion`/`migrateData`.
 7. **Hamburger menu + multi-project switcher** — backed by item 6.
 
-(Numbering starts at 2 because earlier items have shipped and moved to
+(Numbering starts at 2.5 because earlier items have shipped and moved to
 SPEC.md. Keep remaining numbers stable as items complete — don't renumber —
 since they're cross-referenced throughout this document and in commit
 messages.)
@@ -42,70 +41,11 @@ messages.)
 | `js/render.js` | `render`, `drawGrid`, `drawLevel`, coordinate transforms, `el(...)` |
 | `js/inspector.js` | `renderInspector` as a lookup table keyed by selection type |
 | `js/app.js` | Pointer/key event dispatch, DOM wiring, startup |
-| `js/tools.js` *(item 2)* | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, replacing ad-hoc per-gesture globals. Holds the rectangle and freeform room-drawing tools. |
+| `js/tools.js` | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, covering corner/wall/room drags, pan, and the `N`/`Shift+N` room-drawing tools. Items 3 and 5 add more `kind`s here (a pick-wall mode, etc.) rather than growing `js/app.js`'s dispatch. |
 | `js/catalog.js` *(item 4, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for wall openings (item 4) and room fixtures (item 5). Load before `render.js`/`inspector.js`. |
 | `js/geometry.js` *(optional, item 3)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
 | `js/storage.js` *(item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
 | `js/nav.js` *(item 7)* | Hamburger menu / project switcher. |
-
-## Bug: connected rooms must move together
-
-Dragging a room by its name (whole-room translate) and nudging a room
-(arrow keys) must move every room transitively welded to it, not just the
-dragged room's own `room.loop` points. When two rooms share a wall, the
-shared corners belong to both rooms' loops — so translating only one room's
-loop stretches the neighbor instead of carrying it along.
-
-**Fix:** before translating, compute the full connected component of rooms
-transitively sharing welded points with the dragged room (flood-fill /
-union-find over shared point ids across all rooms in the level — not just
-direct neighbors, since a chain of 3+ welded rooms should all move
-together). Translate every point in that unioned set by the same `{dx,dy}`
-delta. Apply to both the whole-room drag gesture and `nudgeRoom`. **Respect
-locked rooms**: stop the flood-fill from propagating through a point that
-belongs to a locked room — a locked room's points never move, and the
-dragged cluster stops at a locked neighbor's shared wall rather than
-dragging it along or silently detaching.
-
-**Cross-reference for item 5:** once this is fixed, a whole-room drag can
-move multiple rooms in one gesture. Item 5's "free objects carry along by
-the room's `{dx,dy}` on `roomDrag`/`nudgeRoom`" rule must apply per-room
-across the entire moved cluster, not just the directly-dragged room.
-
-## Item 2 — room-drawing hotkeys
-
-- `N`: rectangle tool. Crosshair cursor, click corner A, live preview
-  rectangle, click corner B completes an axis-aligned 4-point room. Esc
-  cancels.
-- `Shift+N`: freeform tool. Click to place each vertex in sequence with a
-  live preview edge. Each new segment defaults to axis-locked
-  (horizontal/vertical) from the previous vertex; holding `Ctrl` while
-  placing a vertex toggles that lock off for a free angle. **Completes only
-  by clicking back on/near the starting vertex** — no Enter/double-click
-  shortcut to finish an open polyline. Esc cancels.
-- **On completing a room (either tool), immediately put the room-name field
-  into edit mode, focused and ready to type** — no extra click to select it
-  first. The existing "+ New room" button gets the same fix — "a room was
-  just created" must behave identically regardless of entry point.
-- Implementation notes:
-  - Ctrl+click triggers the native context menu on some platforms —
-    `preventDefault` on `contextmenu` while a draw tool is active. Confirm
-    cross-browser/Mac behavior before assuming Ctrl is the final modifier
-    (Meta may be needed as a Mac alternative).
-  - Walls/corners/room-labels have their own `pointerdown` handlers that
-    `stopPropagation()` — while a draw tool is active, route all pointer
-    events through the tool dispatcher first (e.g. disable `pointer-events`
-    on existing geometry, or check `interaction.kind` before existing
-    per-element handlers run) so clicking existing geometry doesn't start a
-    drag instead of placing a vertex.
-  - Lock the axis before computing snap, then snap only along the locked
-    axis. Create new vertices through the existing point-creation path so
-    they join/weld onto existing corners like any other point.
-  - Validate freeform shapes: reject fewer than 3 vertices or
-    self-intersecting edges.
-  - New loops use a consistent winding order. Item 3's interior-offset code
-    must use signed area regardless, since older data and `cutRoom` output
-    aren't guaranteed to follow it.
 
 ## Item 2.5 — unify room naming with the double-click-in-place pattern
 
@@ -275,10 +215,13 @@ level.objects = [{
 - **Movement rules — never apply both to the same object:**
   - *Anchored* objects follow their wall automatically via `resolveObjects`
     — they do not need the whole-room-translate carry-along.
-  - *Free* (unanchored) objects move only on a whole-room translate
-    (`roomDrag`/`nudgeRoom`, both of which already compute a clean `{dx,dy}`
-    delta to carry them along by). Reshaping a room (corner/wall drag,
-    divide, cut, length/angle edit) leaves a free object in place.
+  - *Free* (unanchored) objects move only on a whole-room translate (the
+    `room`-kind interaction in `js/tools.js`, or `nudgeRoom`) — both already
+    compute a `connectedRoomPoints()` cluster and a `{dx,dy}` delta; carry a
+    free object along whenever its `roomId` is in that cluster's `roomIds`,
+    not just when its own room is the one directly dragged. Reshaping a room
+    (corner/wall drag, divide, cut, length/angle edit) leaves a free object
+    in place.
 - **Dragging:**
   - *Anchored*: dragging edits `along`/`gap` in the wall's local frame, with
     snapping and a live readout (e.g. `42" from wall`). Never silently

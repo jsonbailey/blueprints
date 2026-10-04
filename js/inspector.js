@@ -126,7 +126,7 @@ function renderRoomInspector(f, body){
     <div class="bigval">${Math.round(area)} sf</div>
     <span class="field-label">Bounding size (W · H)</span>
     <div class="bigval" style="font-size:16px">${fmtFt(maxX-minX)} · ${fmtFt(maxY-minY)}</div>
-    <p class="muted">Drag the room's name on the plan to move the whole room; it snaps onto nearby corners. Shared corners pull their neighbours along.</p>
+    <p class="muted">Drag the room's name on the plan to move the whole room; it snaps onto nearby corners. Rooms welded to it (sharing a corner, directly or through a chain) move with it so they keep their shape; locked rooms stay put.</p>
     <span class="field-label">Nudge (by snap step)</span>
     <div class="btngrid" style="margin-top:6px">
       <button class="btn" data-nudge="up">↑</button>
@@ -175,11 +175,16 @@ function renderRoomInspector(f, body){
   setReadout("Room", `${r.name} · ${Math.round(area)} sf${r.locked?" · LOCKED":""}`);
 }
 
+/* Same move-set as a room drag: the whole welded cluster, bounded by locked
+   rooms (connectedRoomPoints in js/model.js). A locked room doesn't nudge. */
 function nudgeRoom(r, dir){
   const f=activeLevel(); const step = opts.snap>0 ? opts.snap : 0.25;
+  if(r.locked){ setReadout("Locked","unlock this room to move it"); return; }
+  const ids=connectedRoomPoints(f, r.id).ids;
+  if(!ids.length) return;
   const dx = dir==="left"?-step:dir==="right"?step:0;
   const dy = dir==="up"?-step:dir==="down"?step:0;
-  commit(()=>{ [...new Set(r.loop)].forEach(id=>{const p=ptOf(f,id); p.x+=dx; p.y+=dy;}); });
+  commit(()=>{ ids.forEach(id=>{const p=ptOf(f,id); p.x+=dx; p.y+=dy;}); });
 }
 
 function applyLength(w){

@@ -136,6 +136,49 @@ function divideWall(f, w){
 /* ---- locking ---- */
 function lockedPointIds(f){ const s=new Set(); f.rooms.forEach(r=>{ if(r.locked) r.loop.forEach(id=>s.add(id)); }); return s; }
 
+/* The set of points a whole-room translate (room drag / nudge) must move so
+   no welded neighbour gets distorted: flood-fill across every room in the
+   level that transitively shares a point id with `startRoomId` (a chain
+   A-B-C moves together even though A never touches C), and return the union
+   of their points.
+
+   Locked rooms are a hard boundary. A point belonging to any locked room is
+   never moved and never propagated through — so a locked room is neither
+   dragged along nor distorted, and rooms that touch the cluster only via a
+   locked room's corner stay put. Such points are reported in `pinnedIds`:
+   they stay fixed while the rest of the cluster moves, so an unlocked room
+   welded to a locked one stretches at that shared corner (the locked room's
+   geometry wins). In practice this is rare — locking a room detaches it
+   first — but loaded files or welds made before locking can still produce it.
+
+   A locked start room yields an empty result (callers already refuse to move
+   it). Returns {ids, roomIds, pinnedIds} — `roomIds` is every room in the
+   moved cluster (item 5's free-object carry-along needs it per room). */
+function connectedRoomPoints(f, startRoomId){
+  const start=f.rooms.find(r=>r.id===startRoomId);
+  const out={ids:[], roomIds:[], pinnedIds:[]};
+  if(!start || start.locked) return out;
+  const locked=lockedPointIds(f);
+  const roomsByPt=new Map();
+  f.rooms.forEach(r=>{ if(r.locked) return; new Set(r.loop).forEach(id=>{
+    if(!roomsByPt.has(id)) roomsByPt.set(id,[]); roomsByPt.get(id).push(r); }); });
+  const seenRooms=new Set([start.id]), ids=new Set(), pinned=new Set();
+  const queue=[start];
+  while(queue.length){
+    const r=queue.shift(); out.roomIds.push(r.id);
+    for(const id of r.loop){
+      if(locked.has(id)){ pinned.add(id); continue; }   // boundary: don't move, don't cross
+      if(ids.has(id)) continue;
+      ids.add(id);
+      for(const n of roomsByPt.get(id)||[]){
+        if(!seenRooms.has(n.id)){ seenRooms.add(n.id); queue.push(n); }
+      }
+    }
+  }
+  out.ids=[...ids]; out.pinnedIds=[...pinned];
+  return out;
+}
+
 /* Insert a point at (x,y) on the edge (a,b) for every room using that edge. */
 function insertPointOnWall(f,a,b,x,y){
   const mid={id:"pt"+(_pid++), x:snapInch(x), y:snapInch(y)}; let inserted=false;
@@ -285,6 +328,57 @@ function polyArea(f, loop){
   let s=0; for(let i=0;i<loop.length;i++){ const a=ptOf(f,loop[i]), b=ptOf(f,loop[(i+1)%loop.length]); s += a.x*b.y - b.x*a.y; }
   return Math.abs(s)/2;
 }
+/* ---- raw-vertex loop geometry ({x,y} lists, not yet point ids) — used to
+   validate shapes from the room-drawing tools before they touch the model.
+   (ARCHITECTURE.md suggests an optional js/geometry.js for this kind of
+   helper once item 3 needs more of it.) ---- */
+
+/* Signed shoelace area. World coords are y-down, so a POSITIVE value is a
+   loop that runs clockwise as seen on screen — the order addRoom() and
+   buildLevel() have always produced (top-left → top-right → bottom-right →
+   bottom-left), and the order the drawing tools normalize new rooms to. */
+function signedAreaXY(vs){
+  let s=0; for(let i=0;i<vs.length;i++){ const a=vs[i], b=vs[(i+1)%vs.length]; s += a.x*b.y - b.x*a.y; }
+  return s/2;
+}
+function orient2(a,b,c){ return (b.x-a.x)*(c.y-a.y) - (b.y-a.y)*(c.x-a.x); }
+function onSegXY(p,q,r,eps){   // r collinear with p-q: is it within the segment's box?
+  return r.x>=Math.min(p.x,q.x)-eps && r.x<=Math.max(p.x,q.x)+eps && r.y>=Math.min(p.y,q.y)-eps && r.y<=Math.max(p.y,q.y)+eps;
+}
+/* Do segments a-b and c-d intersect (crossing, touching, or collinear
+   overlap)? */
+function segmentsIntersect(a,b,c,d){
+  const eps=1e-9;
+  const d1=orient2(c,d,a), d2=orient2(c,d,b), d3=orient2(a,b,c), d4=orient2(a,b,d);
+  if(((d1>eps&&d2<-eps)||(d1<-eps&&d2>eps)) && ((d3>eps&&d4<-eps)||(d3<-eps&&d4>eps))) return true;
+  if(Math.abs(d1)<=eps && onSegXY(c,d,a,eps)) return true;
+  if(Math.abs(d2)<=eps && onSegXY(c,d,b,eps)) return true;
+  if(Math.abs(d3)<=eps && onSegXY(a,b,c,eps)) return true;
+  if(Math.abs(d4)<=eps && onSegXY(a,b,d,eps)) return true;
+  return false;
+}
+/* True if the closed loop crosses or touches itself. O(n²) over edge pairs:
+   non-adjacent edges must not meet at all; adjacent edges (which share a
+   vertex) must not fold back over each other (a zero-width spike). */
+function loopSelfIntersects(vs){
+  const n=vs.length; if(n<3) return false;
+  for(let i=0;i<n;i++){
+    const a=vs[i], b=vs[(i+1)%n];
+    for(let j=i+1;j<n;j++){
+      const c=vs[j], d=vs[(j+1)%n];
+      const adjNext = j===i+1, adjWrap = i===0 && j===n-1;
+      if(adjNext || adjWrap){
+        // shared vertex v; u and w are the far ends of the two edges
+        const v = adjNext ? b : a, u = adjNext ? a : b, w = adjNext ? d : c;
+        if(Math.abs(orient2(u,v,w))<=1e-9 && ((u.x-v.x)*(w.x-v.x)+(u.y-v.y)*(w.y-v.y))>0) return true;
+        continue;
+      }
+      if(segmentsIntersect(a,b,c,d)) return true;
+    }
+  }
+  return false;
+}
+
 function centroid(f, loop){
   let x=0,y=0; loop.forEach(id=>{const p=ptOf(f,id); x+=p.x; y+=p.y;}); return {x:x/loop.length, y:y/loop.length};
 }

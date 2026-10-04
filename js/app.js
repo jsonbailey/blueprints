@@ -17,7 +17,6 @@ projNameEl.addEventListener("blur", ()=> setProjectName(projNameEl.textContent))
 
 let movingEnd = "b";                 // which wall endpoint moves when length is edited
 let cornerRoom = null;               // which room's corner is targeted for angle ops
-let snapViz = null;   // transient drag-time snap feedback {targetId?, vx?, vy?}
 
 /* ---------- selection + inspector ---------- */
 function selectWall(id){ sel={type:"wall",id}; render(); renderInspector(); }
@@ -47,176 +46,63 @@ function addRoom(){
     deriveWalls(f);
     sel={type:"room", id:rid};
   });
+  focusRoomName();
 }
 
-/* ---------- dragging: corners and whole walls ---------- */
-let drag=null;       // corner drag
-let wallDrag=null;   // whole-wall slide (locked to perpendicular axis)
-let roomDrag=null;   // whole-room move (free in both axes)
-const DRAG_PX = 3;   // movement before a press counts as a drag (vs. a click)
-const SNAP_PX = 12;  // pixel radius for connection/alignment snapping
-
-function svgBox(){ return svg.getBoundingClientRect(); }
-function pastThreshold(d,e){
-  if(d.active) return true;
-  if(Math.hypot(e.clientX-d.startClient.x, e.clientY-d.startClient.y) > DRAG_PX){ d.active=true; return true; }
-  return false;
+/* "A room was just created" -> its name field is in edit mode, focused with
+   the text selected, ready to type over (same focus()+select() precedent as
+   the wall inspector's length input). Shared by "+ New room" and both
+   drawing tools so every entry point behaves identically. Deferred one task:
+   when the room is completed by a click on the plan, the browser's own
+   mousedown default action (moving focus to the clicked, non-focusable
+   svg / body) runs after our pointerdown handler and would steal focus
+   straight back. */
+function focusRoomName(){
+  setTimeout(()=>{
+    if(sel.type!=="room") return;
+    const rn=document.getElementById("roomName");
+    if(rn){ rn.focus(); rn.select(); }
+  },0);
 }
 
-function startDragPoint(e,id){
-  e.stopPropagation();
-  const f=activeLevel(); const p=ptOf(f,id);
-  selectPoint(id);
-  if(lockedPointIds(f).has(id)){ setReadout("Locked","corner belongs to a locked room"); return; }
-  drag={id, startClient:{x:e.clientX,y:e.clientY},
-        startWorld:toWorld(e.clientX-svgBox().left, e.clientY-svgBox().top),
-        startPt:{x:p.x,y:p.y}, preState:captureState(), committed:false, active:false};
-  svg.setPointerCapture(e.pointerId);
-}
+/* ---------- pointer dispatch ----------
+   Gesture state and per-kind behavior live in js/tools.js (`interaction` +
+   `interactionHandlers`); these listeners only route events there. Corner,
+   wall and room-label pointerdowns are wired in js/render.js straight to
+   startDragPoint/startDragWall/startDragRoom (which stopPropagation), so
+   anything reaching the svg's own pointerdown is empty space → pan.
 
-function startDragRoom(e,roomId){
-  e.stopPropagation();
-  const f=activeLevel(); const room=f.rooms.find(r=>r.id===roomId); if(!room) return;
-  selectRoom(roomId);
-  if(room.locked){ setReadout("Locked","unlock this room to move it"); return; }
-  // Move every corner of the room by the same offset. Shared corners carry
-  // their neighbours along, so adjacent rooms stretch to stay attached.
-  const ids=[...new Set(room.loop)];
-  const starts=ids.map(id=>{const p=ptOf(f,id);return {id,x:p.x,y:p.y};});
-  roomDrag={ roomId, starts, ref:{x:starts[0].x,y:starts[0].y},
-    startClient:{x:e.clientX,y:e.clientY},
-    startWorld:toWorld(e.clientX-svgBox().left,e.clientY-svgBox().top),
-    preState:captureState(), committed:false, active:false };
-  svg.setPointerCapture(e.pointerId);
-}
-
-function startDragWall(e,id){
-  e.stopPropagation();
-  const f=activeLevel(); const w=wallById(f,id); if(!w) return;
-  selectWall(id);
-  const locked=lockedPointIds(f);
-  if(locked.has(w.a) && locked.has(w.b)){ setReadout("Locked","wall belongs to a locked room"); return; }
-  const a=ptOf(f,w.a), b=ptOf(f,w.b);
-  // The wall's dominant orientation picks the single allowed motion axis:
-  // a mostly-horizontal wall slides vertically; a mostly-vertical wall slides
-  // horizontally. The wall stays parallel and its attached sides stretch evenly.
-  const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
-  wallDrag={ id, axis: horiz ? "y" : "x",
-    aId:w.a, bId:w.b, aStart:{x:a.x,y:a.y}, bStart:{x:b.x,y:b.y},
-    startClient:{x:e.clientX,y:e.clientY},
-    startWorld:toWorld(e.clientX-svgBox().left, e.clientY-svgBox().top),
-    preState:captureState(), committed:false, active:false };
-  svg.setPointerCapture(e.pointerId);
-}
-
-/* ---------- pan + zoom + global pointer handling ---------- */
-let pan=null;
+   Exception: an interaction kind with its own `down` handler (the room-
+   drawing tools) owns every pointerdown while it's active. This listener
+   runs in the CAPTURE phase on the svg, i.e. before any wall/corner/label
+   listener, and stops propagation there — so clicking existing geometry
+   places a vertex instead of starting that element's drag, and the pan
+   listener below never sees it. Only the primary button places; Ctrl+click
+   is accepted even if the platform reports it as a secondary-button press
+   (macOS turns Ctrl+click into a right-click). */
 svg.addEventListener("pointerdown",(e)=>{
-  // Active walls + corner handles call stopPropagation, so anything reaching
-  // here is empty space / a fill / a shadow level — start a pan.
+  const h = interaction && interactionHandlers[interaction.kind];
+  if(!h || !h.down) return;
+  e.stopImmediatePropagation(); e.preventDefault();
+  if(e.button===0 || (e.button===2 && e.ctrlKey)) h.down(interaction,e);
+}, true);
+/* Ctrl+click opens the native context menu on some platforms; suppress it
+   only while a draw tool is active (Ctrl+click = free-angle vertex). */
+svg.addEventListener("contextmenu",(e)=>{ if(drawToolActive()) e.preventDefault(); });
+svg.addEventListener("pointerdown",(e)=>{
   clearSel();
-  pan={x:e.clientX,y:e.clientY,ox:view.ox,oy:view.oy};
-  svg.classList.add("panning");
-  svg.setPointerCapture(e.pointerId);
+  startPan(e);
 });
 svg.addEventListener("pointermove",(e)=>{
-  const bx=svgBox();
-  if(drag){
-    if(!pastThreshold(drag,e)) return;
-    commitCaptured(drag);
-    const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
-    const f=activeLevel(); const p=ptOf(f,drag.id);
-    let nx=applySnap(drag.startPt.x + (wx-drag.startWorld[0]));
-    let ny=applySnap(drag.startPt.y + (wy-drag.startWorld[1]));
-    drag.snapTarget=null; drag.snapEdge=null; snapViz=null;
-    if(opts.snapConnect && !e.altKey){
-      const s=computeSnap(f, drag.id, nx, ny);
-      nx=s.x; ny=s.y; drag.snapTarget=s.targetId; drag.snapEdge=s.edge;
-      snapViz={targetId:s.targetId, edge:s.edge, gx:s.gx, gy:s.gy};
-    }
-    p.x=nx; p.y=ny;
-    render();
-    setReadout((drag.snapTarget||drag.snapEdge)?"Corner → connect":"Corner", `${fmtFt(p.x)} · ${fmtFt(p.y)}`);
-    return;
-  }
-  if(wallDrag){
-    if(!pastThreshold(wallDrag,e)) return;
-    commitCaptured(wallDrag);
-    const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
-    const f=activeLevel(); const a=ptOf(f,wallDrag.aId), b=ptOf(f,wallDrag.bId);
-    let delta;
-    if(wallDrag.axis==="y"){
-      delta = applySnap(wallDrag.aStart.y + (wy-wallDrag.startWorld[1])) - wallDrag.aStart.y;
-      a.y=wallDrag.aStart.y+delta; b.y=wallDrag.bStart.y+delta;
-    } else {
-      delta = applySnap(wallDrag.aStart.x + (wx-wallDrag.startWorld[0])) - wallDrag.aStart.x;
-      a.x=wallDrag.aStart.x+delta; b.x=wallDrag.bStart.x+delta;
-    }
-    render();
-    const dir = wallDrag.axis==="y" ? (delta<0?"up":"down") : (delta<0?"left":"right");
-    setReadout("Wall moved", `${fmtFt(Math.abs(delta))} ${Math.abs(delta)<1e-6?"":dir}`);
-    return;
-  }
-  if(roomDrag){
-    if(!pastThreshold(roomDrag,e)) return;
-    commitCaptured(roomDrag);
-    const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
-    let dx = applySnap(roomDrag.ref.x + (wx-roomDrag.startWorld[0])) - roomDrag.ref.x;
-    let dy = applySnap(roomDrag.ref.y + (wy-roomDrag.startWorld[1])) - roomDrag.ref.y;
-    const f=activeLevel();
-    snapViz=null;
-    if(opts.snapConnect && !e.altKey){
-      const s=computeRoomSnap(f, roomDrag.starts, dx, dy);
-      dx=s.dx; dy=s.dy;
-      snapViz={targetId:s.targetId, gx:s.gx, gy:s.gy};
-    }
-    roomDrag.starts.forEach(s=>{ const p=ptOf(f,s.id); p.x=s.x+dx; p.y=s.y+dy; });
-    render();
-    setReadout(snapViz&&(snapViz.targetId||snapViz.gx!=null||snapViz.gy!=null)?"Room → connect":"Room moved", `${fmtFt(dx)} · ${fmtFt(dy)}`);
-    return;
-  }
-  if(pan){
-    view.ox = pan.ox + (e.clientX-pan.x);
-    view.oy = pan.oy + (e.clientY-pan.y);
-    render();
-    return;
-  }
+  if(interaction){ interactionHandlers[interaction.kind].move(interaction,e); return; }
   // idle: show cursor world coords
   if(sel.type==null){
-    const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
+    const [wx,wy]=eventWorld(e);
     setReadout("Cursor", `${fmtFt(wx)} · ${fmtFt(wy)}`);
   }
 });
 function endPointer(e){
-  if(drag){
-    if(drag.active && drag.snapTarget){
-      weldPoints(activeLevel(), drag.id, drag.snapTarget);
-      sel={type:"point", id:drag.snapTarget};
-    } else if(drag.active && drag.snapEdge){
-      const f=activeLevel(); const p=ptOf(f,drag.id);
-      const mid=insertPointOnWall(f, drag.snapEdge.a, drag.snapEdge.b, p.x, p.y);
-      if(mid){ weldPoints(f, drag.id, mid); sel={type:"point", id:mid}; }
-    }
-    if(!drag.active) drag.preState=null;
-    drag=null; snapViz=null; markDirty();
-  }
-  if(wallDrag){ wallDrag=null; renderInspector(); }
-  if(roomDrag){
-    if(roomDrag.active && opts.snapConnect){
-      const f=activeLevel(); const inRoom=new Set(roomDrag.starts.map(s=>s.id)); const locked=lockedPointIds(f);
-      for(const s of roomDrag.starts){
-        const p=ptOf(f,s.id); if(!p) continue;
-        let tgt=null;
-        for(const q of f.points){
-          if(inRoom.has(q.id) || locked.has(q.id)) continue;
-          if(Math.hypot(q.x-p.x,q.y-p.y) <= MERGE_TOL){ tgt=q; break; }
-        }
-        if(tgt) weldPoints(f, s.id, tgt.id);
-      }
-    }
-    roomDrag=null; snapViz=null; markDirty();
-  }
-  if(pan){ pan=null; svg.classList.remove("panning"); }
+  if(interaction) interactionHandlers[interaction.kind].end(interaction,e);
 }
 svg.addEventListener("pointerup",endPointer);
 svg.addEventListener("pointercancel",endPointer);
@@ -467,12 +353,10 @@ document.addEventListener("keydown",(e)=>{
   if(isTypingTarget(e)) return;
 
   if(e.key==="Escape"){
-    // Esc priority: cancel an active tool/mode first, if one is active;
-    // otherwise clear the current selection. There's no "active tool"
-    // concept yet (room-drawing hotkeys are a later item), so closing an
-    // open level panel is the first thing to cancel today — written as an
-    // early-return guard clause so a future tool-cancel check can be
-    // inserted above this line without restructuring the handler.
+    // Esc priority: cancel an active draw tool (discarding its in-progress
+    // shape) first, then close an open level panel, then clear the current
+    // selection — each an early-return guard clause.
+    if(cancelDrawTool()) return;
     if(_levelPanelOpen){ closeLevelPanel(); return; }
     clearSel();
     return;
@@ -482,6 +366,22 @@ document.addEventListener("keydown",(e)=>{
   // modifier state ("z" vs "Z"), while e.code ("KeyZ") stays stable
   // regardless — needed so a future Shift+N can be told apart from plain N.
   if((e.ctrlKey||e.metaKey) && e.code==="KeyZ"){ e.preventDefault(); undo(); return; }
+
+  // N = rectangle tool, Shift+N = freeform tool (ARCHITECTURE.md item 2).
+  // Not with Ctrl/Cmd/Alt (leave browser shortcuts like Cmd+N alone), and
+  // not on key auto-repeat (holding N would toggle the tool on and off).
+  if(e.code==="KeyN" && !e.ctrlKey && !e.metaKey && !e.altKey){
+    e.preventDefault();
+    if(!e.repeat) toggleDrawTool(e.shiftKey ? "poly" : "rect");
+    return;
+  }
+
+  // Ctrl/Cmd/Alt pressed with the mouse still: refresh the draw preview's
+  // free-angle / snap-bypass state without waiting for a pointermove.
+  if(e.key==="Control" || e.key==="Meta" || e.key==="Alt") refreshDrawPreview(e);
+});
+document.addEventListener("keyup",(e)=>{
+  if(e.key==="Control" || e.key==="Meta" || e.key==="Alt") refreshDrawPreview(e);
 });
 
 window.addEventListener("resize", render);

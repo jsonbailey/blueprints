@@ -39,10 +39,23 @@ build a plan by adding rooms and levels in-app or opening a previously saved
 
 - Drag a corner (moves all anchored walls), drag a wall (slides the whole
   section, locked to its perpendicular axis, with ①/② badges showing which
-  end moves), or drag a room by its name (moves the whole room).
+  end moves), or drag a room by its name (moves the whole room, together
+  with every room welded to it — directly or through a chain of shared
+  corners — so connected neighbours keep their shape; nudging does the
+  same). A locked room is a hard boundary: it never moves, and an unlocked
+  room still welded to it stays pinned at the shared corner.
 - Edit a wall's exact length (choose which end stays fixed); edit a
   corner's X/Y; nudge rooms by the snap step.
-- Add room, rename room (live), delete room, divide wall (insert a midpoint
+- Draw a room: `N` is the rectangle tool (click two opposite corners);
+  `Shift+N` is the freeform tool (click each corner — segments lock to
+  horizontal/vertical unless Ctrl/Cmd is held — and click the first corner
+  again to close; self-intersecting outlines are rejected). Both snap and
+  weld onto existing corners/walls like a dragged corner (Alt bypasses),
+  Esc cancels, and pressing the same key again exits the tool. New rooms
+  are stored with a consistent winding (positive signed area in the y-down
+  world frame, i.e. clockwise on screen).
+- Add room, rename room (live; a newly added or drawn room's name field is
+  focused and selected, ready to type), delete room, divide wall (insert a midpoint
   into all rooms sharing it), delete corner (shrinks a room, or deletes it
   below 3 corners with confirmation).
 - Constrain a corner angle to 90° or a typed value, with a per-room
