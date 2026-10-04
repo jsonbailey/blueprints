@@ -30,7 +30,7 @@ function render(){
 
   if(opts.grid) drawGrid(W,H);
 
-  renderLevelTabs();
+  renderLevelPanel();
 
   // shadow (every other visible level) underneath
   if(opts.shadow) otherLevels().forEach(l=>drawLevel(l, {shadow:true}));

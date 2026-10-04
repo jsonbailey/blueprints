@@ -66,10 +66,12 @@ build a plan by adding rooms and levels in-app or opening a previously saved
 - **Lock geometry**: freezes a room (detaches it, blocks moving it/its
   walls/corners, excludes it from snapping/welding) so moving a connected
   room can't reshape it.
-- Level tabs in the titleblock (one per level; click to switch,
-  double-click to rename, "+" adds a blank "Level N" and switches to it);
-  cross-level shadow overlay of all other visible levels; toggles for shadow,
-  dimensions, room names & area, grid, and snap step; fit-to-view; pan/zoom.
+- Level panel in the titleblock (dropdown listing every level; click a level
+  to switch, an eye toggle per level controls its shadow visibility,
+  double-click a name for true in-place rename, "+ Add level" adds a blank
+  "Level N" and switches to it); cross-level shadow overlay of all other
+  visible levels; toggles for shadow, dimensions, room names & area, grid,
+  and snap step; fit-to-view; pan/zoom.
 - Dimensions render inside each room so labels never overlap the neighbor
   across a shared wall.
 
@@ -115,7 +117,6 @@ coordinate/length status readout.
 - Cut that keeps every piece as its own room.
 - Cross-level snapping/alignment; hard-linking shared exterior corners
   across levels.
-- A richer level panel (list with per-level visibility eye toggles,
-  reorder/delete levels).
+- Level reorder/delete from the level panel.
 - A "repair" scan to flag plans corrupted by the old point-id bug.
 - Optional 3D view.

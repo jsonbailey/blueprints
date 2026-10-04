@@ -12,9 +12,16 @@ it go stale.
    `<script src>`, no ES modules, no build step — modules break the
    double-click/`file://` use case; see SPEC.md's offline goal).
 0.5. **Cleanup commit** (see below) — land before new features build on top.
-1. **Level selector UI** — panel replacing the tab row: click to switch, an
-   eye toggle per level (shadow visibility), an add button, and
+1. **Level selector UI** *(done)* — panel replacing the tab row: click to
+   switch, an eye toggle per level (shadow visibility), an add button, and
    double-click-to-rename as true in-place editing (no `prompt()` dialog).
+   Shipped as a dropdown (`#levelPanelBtn` / `#levelPanel` in `index.html`,
+   `renderLevelPanel()` in `js/app.js`) rather than an always-expanded row,
+   so the titleblock stays compact with 6+ levels (the panel scrolls
+   instead). Visibility toggles go through `commit()` (undoable, persisted
+   per `LEVEL_META_FIELDS`); switching the active level stays `markDirty()`
+   only (view-state, not persisted plan data), unchanged from the old tab
+   row.
 2. **Room-drawing hotkeys** — `N` (rectangle) / `Shift+N` (freeform) tools.
 3. **Wall thickness** — per-level default + per-wall override, standard
    presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus

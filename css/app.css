@@ -47,16 +47,50 @@
   #projectName:focus{background:rgba(236,232,223,.12);box-shadow:0 0 0 1px var(--blueprint)}
   .tb-readout{flex:1 1 auto;border-right:none}
   .tb-readout .tb-value{color:var(--markup)}
-  .tb-levels{display:flex;gap:0;overflow-x:auto;max-width:44vw}
-  .leveltab{
-    appearance:none;border:none;background:transparent;color:var(--ink-dim);
-    font-family:var(--ui);font-size:12px;letter-spacing:.1em;text-transform:uppercase;
-    padding:0 14px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;
+
+  /* ---- Level selector: trigger button + dropdown panel ---- */
+  .tb-levels-cell{position:relative}
+  .level-trigger{
+    appearance:none;border:none;background:transparent;color:var(--ink);
+    font-family:var(--mono);font-size:13px;cursor:pointer;padding:1px 4px;margin:-1px -4px;
+    border-radius:3px;display:flex;align-items:center;gap:6px;white-space:nowrap;
   }
-  .leveltab:hover{color:var(--ink)}
-  .leveltab[aria-pressed="true"]{color:var(--ink);border-bottom-color:var(--markup)}
-  .leveltab:focus-visible{outline:2px solid var(--markup);outline-offset:-2px}
-  .leveltab.add{padding:0 10px;font-size:15px;letter-spacing:0}
+  .level-trigger:hover{background:rgba(236,232,223,.08)}
+  .level-trigger[aria-expanded="true"]{background:rgba(236,232,223,.12);box-shadow:0 0 0 1px var(--blueprint)}
+  .level-trigger:focus-visible{outline:2px solid var(--markup);outline-offset:1px}
+  .level-trigger .caret{color:var(--ink-dim);font-size:10px}
+  .level-panel{
+    position:absolute;top:calc(100% + 6px);left:16px;z-index:50;
+    min-width:220px;max-width:320px;max-height:300px;overflow-y:auto;
+    background:var(--panel-2);border:1px solid var(--panel-line);border-radius:6px;
+    box-shadow:0 10px 28px rgba(0,0,0,.45);padding:6px;
+  }
+  .level-row{
+    display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;
+    cursor:pointer;border-left:2px solid transparent;
+  }
+  .level-row:hover{background:rgba(236,232,223,.06)}
+  .level-row[aria-pressed="true"]{border-left-color:var(--markup);background:rgba(206,59,35,.1)}
+  .level-eye{
+    appearance:none;border:none;background:transparent;color:var(--ink-dim);
+    width:20px;height:20px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;border-radius:3px;
+  }
+  .level-eye:hover{color:var(--ink);background:rgba(236,232,223,.08)}
+  .level-eye:focus-visible{outline:2px solid var(--markup);outline-offset:1px}
+  .level-name{
+    flex:1 1 auto;font-family:var(--ui);font-size:12px;color:var(--ink);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:3px;padding:1px 3px;margin:-1px -3px;
+  }
+  .level-name.editing{
+    outline:none;box-shadow:0 0 0 1px var(--blueprint);background:rgba(236,232,223,.1);
+    white-space:normal;overflow:visible;cursor:text;
+  }
+  .level-add{
+    color:var(--blueprint);font-family:var(--ui);font-size:12px;letter-spacing:.02em;
+    border:none;background:transparent;width:100%;text-align:left;
+  }
+  .level-add:hover{background:rgba(236,232,223,.06)}
 
   /* ---- Body split ---- */
   .work{flex:1 1 auto;display:flex;min-height:0}
