@@ -22,7 +22,7 @@ it go stale.
    per `LEVEL_META_FIELDS`); switching the active level stays `markDirty()`
    only (view-state, not persisted plan data), unchanged from the old tab
    row.
-2. **Room-drawing hotkeys** — `N` (rectangle) / `Shift+N` (freeform) tools.
+2. **Room-drawing hotkeys** *(done)* — `N` (rectangle) / `Shift+N` (freeform) tools.
 3. **Wall thickness** — per-level default + per-wall override, standard
    presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus
    an `open` flag for open-concept (no-wall) edges and the generalized
@@ -54,7 +54,7 @@ thickness introduces — see each item's section for the reasoning.)
 | `js/render.js` | `render`, `drawGrid`, `drawLevel`, coordinate transforms, `el(...)` |
 | `js/inspector.js` | `renderInspector` as a lookup table keyed by selection type |
 | `js/app.js` | Pointer/key event dispatch (routes to `js/tools.js` handlers), DOM wiring, startup |
-| `js/tools.js` *(new, item 2)* | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, replacing the `drag`/`wallDrag`/`roomDrag`/`pan` globals. Holds the rectangle and freeform room-drawing tools. Build this refactor as the **first commit of item 2** — items 2/3/5 add 8+ interaction modes, too many for ad-hoc if-chains. |
+| `js/tools.js` *(item 2, shipped)* | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, replacing the `drag`/`wallDrag`/`roomDrag`/`pan` globals. Holds the rectangle and freeform room-drawing tools. Build this refactor as the **first commit of item 2** — items 2/3/5 add 8+ interaction modes, too many for ad-hoc if-chains. |
 | `js/catalog.js` *(new, item 3, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for fixtures (item 3) and openings (item 5). Load before `render.js`/`inspector.js`. |
 | `js/geometry.js` *(new, optional, item 4)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
 | `js/storage.js` *(new, item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
@@ -171,6 +171,31 @@ left behind while its room's walls move out from under it.
   - New loops should use a consistent winding order. Item 4's interior-offset
     code must use signed area regardless, since older data and `cutRoom`
     output aren't guaranteed to follow it.
+- **Shipped** — decisions made during implementation:
+  - `js/tools.js` holds `interaction` + `interactionHandlers` (kinds:
+    `point`, `wall`, `room`, `pan`, `rect`, `poly`). Handler methods:
+    `move`/`end` (all), plus optional `down` (a kind that owns svg
+    pointerdown while active — the persistent draw tools) and `overlay`
+    (preview `<g>` drawn by `render()`). Loaded before `app.js`.
+  - Routing past geometry handlers: a **capture-phase** svg `pointerdown`
+    listener in `app.js` hands the event to `handler.down` and calls
+    `stopImmediatePropagation()` whenever the active kind has one — no
+    per-element checks and no pointer-events CSS toggling. While drawing,
+    there is no left-button pan (wheel zoom still works).
+  - Winding: positive signed area (`signedAreaXY` in `model.js`) in the
+    y-down world frame = clockwise on screen, matching what `addRoom()` and
+    `buildLevel()` already produced; freeform loops are reversed if needed.
+  - Free-angle modifier: Ctrl **or** Cmd/Meta; a secondary-button press with
+    `ctrlKey` (macOS Ctrl+click) also places a vertex. Not yet verified in a
+    real browser on macOS.
+  - Close tolerance: `SNAP_PX` screen pixels around the first vertex (not
+    `MERGE_TOL`, which is sub-pixel at normal zoom).
+  - Vertices stay plain `{x,y,weld}` until completion, then are resolved in
+    one `commit()`: reuse an unlocked corner within `MERGE_TOL`, else split
+    an unlocked wall the vertex lies on (`insertPointOnWall`), else mint.
+  - Validation geometry (`signedAreaXY`, `segmentsIntersect`,
+    `loopSelfIntersects`) lives in `model.js` for now; move it to the
+    optional `js/geometry.js` when item 3 adds more.
 
 ## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 

@@ -97,6 +97,9 @@
   .stage{position:relative;flex:1 1 auto;min-width:0;background:var(--paper)}
   svg#plan{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
   svg#plan.panning{cursor:grabbing}
+  /* room-drawing tool active: crosshair everywhere on the plan, overriding the
+     per-element inline cursors (grab / move / ns-resize) set in render.js */
+  svg#plan.drawing, svg#plan.drawing *{cursor:crosshair !important}
 
   .stage-hint{
     position:absolute;left:14px;bottom:12px;font-family:var(--mono);font-size:11px;

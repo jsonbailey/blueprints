@@ -46,6 +46,23 @@ function addRoom(){
     deriveWalls(f);
     sel={type:"room", id:rid};
   });
+  focusRoomName();
+}
+
+/* "A room was just created" -> its name field is in edit mode, focused with
+   the text selected, ready to type over (same focus()+select() precedent as
+   the wall inspector's length input). Shared by "+ New room" and both
+   drawing tools so every entry point behaves identically. Deferred one task:
+   when the room is completed by a click on the plan, the browser's own
+   mousedown default action (moving focus to the clicked, non-focusable
+   svg / body) runs after our pointerdown handler and would steal focus
+   straight back. */
+function focusRoomName(){
+  setTimeout(()=>{
+    if(sel.type!=="room") return;
+    const rn=document.getElementById("roomName");
+    if(rn){ rn.focus(); rn.select(); }
+  },0);
 }
 
 /* ---------- pointer dispatch ----------
@@ -53,7 +70,25 @@ function addRoom(){
    `interactionHandlers`); these listeners only route events there. Corner,
    wall and room-label pointerdowns are wired in js/render.js straight to
    startDragPoint/startDragWall/startDragRoom (which stopPropagation), so
-   anything reaching the svg's own pointerdown is empty space → pan. */
+   anything reaching the svg's own pointerdown is empty space → pan.
+
+   Exception: an interaction kind with its own `down` handler (the room-
+   drawing tools) owns every pointerdown while it's active. This listener
+   runs in the CAPTURE phase on the svg, i.e. before any wall/corner/label
+   listener, and stops propagation there — so clicking existing geometry
+   places a vertex instead of starting that element's drag, and the pan
+   listener below never sees it. Only the primary button places; Ctrl+click
+   is accepted even if the platform reports it as a secondary-button press
+   (macOS turns Ctrl+click into a right-click). */
+svg.addEventListener("pointerdown",(e)=>{
+  const h = interaction && interactionHandlers[interaction.kind];
+  if(!h || !h.down) return;
+  e.stopImmediatePropagation(); e.preventDefault();
+  if(e.button===0 || (e.button===2 && e.ctrlKey)) h.down(interaction,e);
+}, true);
+/* Ctrl+click opens the native context menu on some platforms; suppress it
+   only while a draw tool is active (Ctrl+click = free-angle vertex). */
+svg.addEventListener("contextmenu",(e)=>{ if(drawToolActive()) e.preventDefault(); });
 svg.addEventListener("pointerdown",(e)=>{
   clearSel();
   startPan(e);
@@ -318,12 +353,10 @@ document.addEventListener("keydown",(e)=>{
   if(isTypingTarget(e)) return;
 
   if(e.key==="Escape"){
-    // Esc priority: cancel an active tool/mode first, if one is active;
-    // otherwise clear the current selection. There's no "active tool"
-    // concept yet (room-drawing hotkeys are a later item), so closing an
-    // open level panel is the first thing to cancel today — written as an
-    // early-return guard clause so a future tool-cancel check can be
-    // inserted above this line without restructuring the handler.
+    // Esc priority: cancel an active draw tool (discarding its in-progress
+    // shape) first, then close an open level panel, then clear the current
+    // selection — each an early-return guard clause.
+    if(cancelDrawTool()) return;
     if(_levelPanelOpen){ closeLevelPanel(); return; }
     clearSel();
     return;
@@ -333,6 +366,22 @@ document.addEventListener("keydown",(e)=>{
   // modifier state ("z" vs "Z"), while e.code ("KeyZ") stays stable
   // regardless — needed so a future Shift+N can be told apart from plain N.
   if((e.ctrlKey||e.metaKey) && e.code==="KeyZ"){ e.preventDefault(); undo(); return; }
+
+  // N = rectangle tool, Shift+N = freeform tool (ARCHITECTURE.md item 2).
+  // Not with Ctrl/Cmd/Alt (leave browser shortcuts like Cmd+N alone), and
+  // not on key auto-repeat (holding N would toggle the tool on and off).
+  if(e.code==="KeyN" && !e.ctrlKey && !e.metaKey && !e.altKey){
+    e.preventDefault();
+    if(!e.repeat) toggleDrawTool(e.shiftKey ? "poly" : "rect");
+    return;
+  }
+
+  // Ctrl/Cmd/Alt pressed with the mouse still: refresh the draw preview's
+  // free-angle / snap-bypass state without waiting for a pointermove.
+  if(e.key==="Control" || e.key==="Meta" || e.key==="Alt") refreshDrawPreview(e);
+});
+document.addEventListener("keyup",(e)=>{
+  if(e.key==="Control" || e.key==="Meta" || e.key==="Alt") refreshDrawPreview(e);
 });
 
 window.addEventListener("resize", render);

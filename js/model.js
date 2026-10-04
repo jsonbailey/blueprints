@@ -328,6 +328,57 @@ function polyArea(f, loop){
   let s=0; for(let i=0;i<loop.length;i++){ const a=ptOf(f,loop[i]), b=ptOf(f,loop[(i+1)%loop.length]); s += a.x*b.y - b.x*a.y; }
   return Math.abs(s)/2;
 }
+/* ---- raw-vertex loop geometry ({x,y} lists, not yet point ids) — used to
+   validate shapes from the room-drawing tools before they touch the model.
+   (ARCHITECTURE.md suggests an optional js/geometry.js for this kind of
+   helper once item 3 needs more of it.) ---- */
+
+/* Signed shoelace area. World coords are y-down, so a POSITIVE value is a
+   loop that runs clockwise as seen on screen — the order addRoom() and
+   buildLevel() have always produced (top-left → top-right → bottom-right →
+   bottom-left), and the order the drawing tools normalize new rooms to. */
+function signedAreaXY(vs){
+  let s=0; for(let i=0;i<vs.length;i++){ const a=vs[i], b=vs[(i+1)%vs.length]; s += a.x*b.y - b.x*a.y; }
+  return s/2;
+}
+function orient2(a,b,c){ return (b.x-a.x)*(c.y-a.y) - (b.y-a.y)*(c.x-a.x); }
+function onSegXY(p,q,r,eps){   // r collinear with p-q: is it within the segment's box?
+  return r.x>=Math.min(p.x,q.x)-eps && r.x<=Math.max(p.x,q.x)+eps && r.y>=Math.min(p.y,q.y)-eps && r.y<=Math.max(p.y,q.y)+eps;
+}
+/* Do segments a-b and c-d intersect (crossing, touching, or collinear
+   overlap)? */
+function segmentsIntersect(a,b,c,d){
+  const eps=1e-9;
+  const d1=orient2(c,d,a), d2=orient2(c,d,b), d3=orient2(a,b,c), d4=orient2(a,b,d);
+  if(((d1>eps&&d2<-eps)||(d1<-eps&&d2>eps)) && ((d3>eps&&d4<-eps)||(d3<-eps&&d4>eps))) return true;
+  if(Math.abs(d1)<=eps && onSegXY(c,d,a,eps)) return true;
+  if(Math.abs(d2)<=eps && onSegXY(c,d,b,eps)) return true;
+  if(Math.abs(d3)<=eps && onSegXY(a,b,c,eps)) return true;
+  if(Math.abs(d4)<=eps && onSegXY(a,b,d,eps)) return true;
+  return false;
+}
+/* True if the closed loop crosses or touches itself. O(n²) over edge pairs:
+   non-adjacent edges must not meet at all; adjacent edges (which share a
+   vertex) must not fold back over each other (a zero-width spike). */
+function loopSelfIntersects(vs){
+  const n=vs.length; if(n<3) return false;
+  for(let i=0;i<n;i++){
+    const a=vs[i], b=vs[(i+1)%n];
+    for(let j=i+1;j<n;j++){
+      const c=vs[j], d=vs[(j+1)%n];
+      const adjNext = j===i+1, adjWrap = i===0 && j===n-1;
+      if(adjNext || adjWrap){
+        // shared vertex v; u and w are the far ends of the two edges
+        const v = adjNext ? b : a, u = adjNext ? a : b, w = adjNext ? d : c;
+        if(Math.abs(orient2(u,v,w))<=1e-9 && ((u.x-v.x)*(w.x-v.x)+(u.y-v.y)*(w.y-v.y))>0) return true;
+        continue;
+      }
+      if(segmentsIntersect(a,b,c,d)) return true;
+    }
+  }
+  return false;
+}
+
 function centroid(f, loop){
   let x=0,y=0; loop.forEach(id=>{const p=ptOf(f,id); x+=p.x; y+=p.y;}); return {x:x/loop.length, y:y/loop.length};
 }

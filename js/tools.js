@@ -14,6 +14,9 @@
      move(it, e)  — pointermove while this interaction is active
      end(it, e)   — pointerup / pointercancel; responsible for clearing
                     `interaction` when the gesture is over
+     down(it, e)  — optional: if present, this kind owns svg pointerdown
+                    while active (the persistent draw tools)
+     overlay(it)  — optional: returns an SVG <g> drawn on top by render()
 
    Loaded after render.js/inspector.js and BEFORE app.js: app.js's startup
    code calls render(), which reads `snapViz` (declared here), so this file's
@@ -204,4 +207,268 @@ const interactionHandlers = {
       interaction=null; svg.classList.remove("panning");
     },
   },
+
+  /* N: rectangle tool. Click corner A, click corner B. */
+  rect: {
+    down(it,e){
+      const q=snapDrawPoint(e, eventWorld(e));
+      if(!it.a){
+        it.a=q; it.cur=q;
+        setReadout("Rectangle","click the opposite corner · Esc to cancel");
+        render(); return;
+      }
+      if(Math.abs(q.x-it.a.x)<MIN_SEG || Math.abs(q.y-it.a.y)<MIN_SEG){
+        setReadout("Rectangle","too thin — click farther from the first corner"); return;
+      }
+      const x0=Math.min(it.a.x,q.x), x1=Math.max(it.a.x,q.x), y0=Math.min(it.a.y,q.y), y1=Math.max(it.a.y,q.y);
+      const weld=it.a.weld && q.weld;
+      // top-left → top-right → bottom-right → bottom-left: positive signed
+      // area, the same winding addRoom() uses (see signedAreaXY)
+      createDrawnRoom([{x:x0,y:y0,weld},{x:x1,y:y0,weld},{x:x1,y:y1,weld},{x:x0,y:y1,weld}]);
+    },
+    move(it,e){
+      const q=snapDrawPoint(e, eventWorld(e));
+      it.cur=q; snapViz=q.viz; render();
+      if(it.a) setReadout("Rectangle", `${fmtFt(Math.abs(q.x-it.a.x))} × ${fmtFt(Math.abs(q.y-it.a.y))}`);
+      else setReadout("Rectangle · first corner", `${fmtFt(q.x)} · ${fmtFt(q.y)}`);
+    },
+    end(){},   // the tool outlives each click's pointerup
+    overlay(it){
+      const g=el("g",{"pointer-events":"none"});
+      if(it.a && it.cur){
+        const [ax,ay]=toScreen(it.a.x,it.a.y), [bx,by]=toScreen(it.cur.x,it.cur.y);
+        g.appendChild(el("polygon",{points:`${ax},${ay} ${bx},${ay} ${bx},${by} ${ax},${by}`,
+          fill:"rgba(206,59,35,0.08)",stroke:"var(--markup)","stroke-width":2,"stroke-dasharray":"6 4"}));
+        g.appendChild(el("circle",{cx:ax,cy:ay,r:4.5,fill:"var(--markup)"}));
+      }
+      if(it.cur){ const [cx,cy]=toScreen(it.cur.x,it.cur.y); g.appendChild(el("circle",{cx,cy,r:4,fill:"none",stroke:"var(--markup)","stroke-width":1.5})); }
+      return g;
+    },
+  },
+
+  /* Shift+N: freeform tool. Click each vertex; segments are axis-locked
+     unless Ctrl/Cmd is held; finishes only by clicking the first vertex. */
+  poly: {
+    down(it,e){
+      const q=polyCandidate(it,e);
+      if(q.close){
+        if(it.verts.length<3){ setReadout("Freeform","place at least 3 corners before closing the shape"); return; }
+        finishPoly(it); return;
+      }
+      const last=it.verts[it.verts.length-1];
+      if(last && Math.hypot(q.x-last.x,q.y-last.y)<MIN_SEG) return;   // repeat click on the same spot
+      it.verts.push({x:q.x, y:q.y, weld:q.weld});
+      it.cur=q;
+      setReadout("Freeform", `${it.verts.length} corner${it.verts.length>1?"s":""} · click the first corner to finish · Ctrl/Cmd: free angle · Esc cancels`);
+      render();
+    },
+    move(it,e){
+      const q=polyCandidate(it,e);
+      it.cur=q; snapViz=q.viz; render();
+      const last=it.verts[it.verts.length-1];
+      if(q.close) setReadout("Freeform", it.verts.length>=3 ? "click to close the shape" : "need at least 3 corners to close");
+      else if(last) setReadout(q.free?"Freeform · free angle":"Freeform", fmtFt(Math.hypot(q.x-last.x,q.y-last.y)));
+      else setReadout("Freeform · first corner", `${fmtFt(q.x)} · ${fmtFt(q.y)}`);
+    },
+    end(){},
+    overlay(it){
+      const g=el("g",{"pointer-events":"none"});
+      const vs=it.verts.map(v=>toScreen(v.x,v.y));
+      if(vs.length>1) g.appendChild(el("polyline",{points:vs.map(p=>p.join(",")).join(" "),fill:"none",stroke:"var(--markup)","stroke-width":2.4,"stroke-linecap":"round","stroke-linejoin":"round"}));
+      if(vs.length && it.cur){
+        const [cx,cy]=toScreen(it.cur.x,it.cur.y), [lx,ly]=vs[vs.length-1];
+        g.appendChild(el("line",{x1:lx,y1:ly,x2:cx,y2:cy,stroke:"var(--markup)","stroke-width":2,"stroke-dasharray":"6 4"}));
+      }
+      vs.forEach(([x,y],i)=>{
+        if(i===0){
+          const hot = it.cur && it.cur.close;
+          g.appendChild(el("circle",{cx:x,cy:y,r:hot?9:7,fill:hot?"rgba(206,59,35,0.25)":"none",stroke:"var(--markup)","stroke-width":2}));
+        }
+        g.appendChild(el("circle",{cx:x,cy:y,r:3.5,fill:"var(--markup)"}));
+      });
+      if(it.cur && !it.cur.close){ const [cx,cy]=toScreen(it.cur.x,it.cur.y); g.appendChild(el("circle",{cx,cy,r:4,fill:"none",stroke:"var(--markup)","stroke-width":1.5})); }
+      return g;
+    },
+  },
 };
+
+/* =========================================================================
+   Room-drawing tools (ARCHITECTURE.md item 2). Unlike the drag kinds above,
+   a draw tool is a persistent mode: it stays in `interaction` across many
+   clicks and owns pointerdown itself (handler.down) — js/app.js routes every
+   svg pointerdown to it in the CAPTURE phase and stops propagation, so
+   clicking an existing wall/corner/label places a vertex instead of starting
+   that element's drag. Vertices are kept as plain {x,y,weld} until the shape
+   completes; only then are points minted/welded into the level, in one
+   undoable commit.
+   ========================================================================= */
+const DRAW_TOOLS = {rect:"Rectangle", poly:"Freeform"};
+const MIN_SEG = 2*MERGE_TOL;   // closer vertices could weld onto one existing corner
+
+function drawToolActive(){ return !!interaction && Object.prototype.hasOwnProperty.call(DRAW_TOOLS, interaction.kind); }
+
+function startDrawTool(kind){
+  interaction = kind==="rect" ? {kind, a:null, cur:null} : {kind, verts:[], cur:null};
+  snapViz=null;
+  svg.classList.add("drawing");
+  render();
+  setReadout(DRAW_TOOLS[kind], kind==="rect" ? "click the first corner · Esc to cancel" : "click to place the first corner · Esc to cancel");
+}
+function exitDrawTool(){
+  interaction=null; snapViz=null;
+  svg.classList.remove("drawing");
+}
+/* Esc / toggling the hotkey: discard the in-progress shape. Returns whether
+   there was a tool to cancel (for the keydown handler's Esc priority). */
+function cancelDrawTool(){
+  if(!drawToolActive()) return false;
+  const label=DRAW_TOOLS[interaction.kind];
+  exitDrawTool(); render();
+  setReadout(label, "cancelled");
+  return true;
+}
+/* N / Shift+N. Ignored mid-drag; pressing the active tool's key again exits it. */
+function toggleDrawTool(kind){
+  if(interaction && !drawToolActive()) return;
+  if(interaction && interaction.kind===kind){ cancelDrawTool(); return; }
+  startDrawTool(kind);
+}
+/* Re-run the active tool's preview with fresh modifier state (Ctrl/Alt
+   pressed or released without moving the mouse). */
+function refreshDrawPreview(e){
+  if(!drawToolActive() || !interaction.lastClient) return;
+  const c=interaction.lastClient;
+  interactionHandlers[interaction.kind].move(interaction,
+    {clientX:c.x, clientY:c.y, ctrlKey:e.ctrlKey, metaKey:e.metaKey, altKey:e.altKey, shiftKey:e.shiftKey});
+}
+
+/* Where a click at world `raw` would land: grid snap, then the same
+   connect-snap a dragged corner uses (computeSnap with no dragged point).
+   `weld` records whether connect-snap was on (and Alt not held) so the
+   vertex may later join an existing corner/wall. */
+function snapDrawPoint(e, raw){
+  if(interaction) interaction.lastClient={x:e.clientX, y:e.clientY};
+  let x=applySnap(raw[0]), y=applySnap(raw[1]);
+  const weld = opts.snapConnect && !e.altKey;
+  let viz=null;
+  if(weld){
+    const s=computeSnap(activeLevel(), null, x, y);
+    x=s.x; y=s.y; viz={targetId:s.targetId, edge:s.edge, gx:s.gx, gy:s.gy};
+  }
+  return {x, y, weld, viz};
+}
+
+/* Axis-locked placement from `prev`: lock to whichever axis the cursor is
+   closer to FIRST, then snap only along the free axis — a corner/wall snap
+   is accepted only if it already lies on the locked line; otherwise fall
+   back to an alignment guide on the free coordinate. */
+function snapDrawPointOnAxis(e, raw, prev){
+  if(interaction) interaction.lastClient={x:e.clientX, y:e.clientY};
+  const horiz = Math.abs(raw[0]-prev.x) >= Math.abs(raw[1]-prev.y);
+  let x = horiz ? applySnap(raw[0]) : prev.x;
+  let y = horiz ? prev.y : applySnap(raw[1]);
+  const weld = opts.snapConnect && !e.altKey;
+  let viz=null;
+  if(weld){
+    const f=activeLevel();
+    const s=computeSnap(f, null, x, y);
+    const onAxis = horiz ? Math.abs(s.y-prev.y)<=MERGE_TOL : Math.abs(s.x-prev.x)<=MERGE_TOL;
+    if((s.targetId || s.edge) && onAxis){
+      if(horiz) x=s.x; else y=s.y;
+      viz={targetId:s.targetId, edge:s.edge, gx:null, gy:null};
+    } else {
+      // guide along the free axis only (computeSnap's guide pass is skipped
+      // whenever it found an off-axis corner/wall, so redo just that pass)
+      const tolW=SNAP_PX/view.scale; let best=tolW, g=null;
+      for(const p of f.points){
+        const d = horiz ? Math.abs(p.x-x) : Math.abs(p.y-y);
+        if(d<best){ best=d; g = horiz ? p.x : p.y; }
+      }
+      if(g!=null){ if(horiz) x=g; else y=g; }
+      viz={targetId:null, edge:null, gx: horiz?g:null, gy: horiz?null:g};
+    }
+  }
+  return {x, y, weld, viz};
+}
+
+/* The freeform tool's candidate vertex for this event: the first vertex if
+   the cursor is within SNAP_PX of it on screen (closing the loop — a screen
+   radius rather than MERGE_TOL, which is under a pixel at normal zoom and
+   unusable as a click target), else an axis-locked point, else (Ctrl/Cmd
+   held, or no previous vertex) a free one. */
+function polyCandidate(it, e){
+  const raw=eventWorld(e);
+  it.lastClient={x:e.clientX, y:e.clientY};
+  const vs=it.verts;
+  if(vs.length){
+    const s=vs[0]; const [ssx,ssy]=toScreen(s.x,s.y); const bx=svgBox();
+    if(Math.hypot(e.clientX-bx.left-ssx, e.clientY-bx.top-ssy) <= SNAP_PX)
+      return {x:s.x, y:s.y, weld:s.weld, viz:null, close:true, free:false};
+  }
+  const free = !!(e.ctrlKey || e.metaKey);
+  const q = (!vs.length || free) ? snapDrawPoint(e, raw) : snapDrawPointOnAxis(e, raw, vs[vs.length-1]);
+  q.close=false; q.free=free && vs.length>0;
+  return q;
+}
+
+/* Validate + complete the freeform loop. Any rejection discards the shape
+   and leaves the tool (per ARCHITECTURE.md: reject, don't silently fix). */
+function finishPoly(it){
+  let vs=it.verts.map(v=>({x:v.x, y:v.y, weld:v.weld}));
+  let err=null;
+  for(let i=0;i<vs.length && !err;i++) for(let j=i+1;j<vs.length;j++){
+    if(Math.hypot(vs[i].x-vs[j].x, vs[i].y-vs[j].y)<MIN_SEG){ err="two corners are on top of each other"; break; }
+  }
+  if(!err && loopSelfIntersects(vs)) err="the outline crosses itself";
+  if(!err && Math.abs(signedAreaXY(vs))<1e-6) err="the shape has no area";
+  if(err){ exitDrawTool(); render(); setReadout("Freeform · rejected", err+" — shape discarded"); return; }
+  if(signedAreaXY(vs)<0) vs.reverse();   // normalize winding (see signedAreaXY)
+  createDrawnRoom(vs);
+}
+
+/* Map a completed vertex onto the level, through the same weld rules a
+   released corner drag uses: reuse an existing (unlocked) corner within
+   MERGE_TOL, else split an (unlocked) wall it lies on (T-junction via
+   insertPointOnWall), else mint a fresh point. Resolved against CURRENT
+   geometry at completion time, so earlier vertices' wall splits are seen by
+   later ones. */
+function resolveDrawnVertex(f, v){
+  if(v.weld){
+    const locked=lockedPointIds(f);
+    let best=null, bd=MERGE_TOL;
+    for(const p of f.points){
+      if(locked.has(p.id)) continue;
+      const d=Math.hypot(p.x-v.x, p.y-v.y); if(d<=bd){ bd=d; best=p; }
+    }
+    if(best) return best.id;
+    for(const w of f.walls){
+      if(locked.has(w.a) && locked.has(w.b)) continue;
+      const A=ptOf(f,w.a), B=ptOf(f,w.b);
+      const pr=projectPointSeg(v.x,v.y,A.x,A.y,B.x,B.y);
+      if(pr.t>0 && pr.t<1 && Math.hypot(pr.x-v.x, pr.y-v.y)<=MERGE_TOL){
+        const mid=insertPointOnWall(f, w.a, w.b, v.x, v.y);
+        if(mid) return mid;
+      }
+    }
+  }
+  const p={id:"pt"+(_pid++), x:snapInch(v.x), y:snapInch(v.y)};
+  f.points.push(p); f._pt.set(p.id,p);
+  return p.id;
+}
+
+/* Shared completion for both tools: one undoable commit that mints/welds the
+   points and the room (same id-minting + reindex pattern as addRoom()),
+   selects it, and puts its name field into edit mode. */
+function createDrawnRoom(verts){
+  const f=activeLevel();
+  exitDrawTool();
+  commit(()=>{
+    const ids=verts.map(v=>resolveDrawnVertex(f,v));
+    const rid="room"+(_pid++);
+    f.rooms.push({id:rid, name:"New Room", kind:"room", loop:ids});
+    f._pt=new Map(f.points.map(p=>[p.id,p]));
+    deriveWalls(f);
+    sel={type:"room", id:rid};
+  });
+  focusRoomName();
+}

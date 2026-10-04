@@ -48,6 +48,11 @@ function render(){
     svg.appendChild(g);
   }
 
+  // in-progress interaction preview (room-drawing tools) — js/tools.js
+  if(interaction && interactionHandlers[interaction.kind].overlay){
+    svg.appendChild(interactionHandlers[interaction.kind].overlay(interaction));
+  }
+
   updateScaleReadout();
 }
 
