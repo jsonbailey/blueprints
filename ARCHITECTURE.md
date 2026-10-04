@@ -16,13 +16,23 @@ it go stale.
    eye toggle per level (shadow visibility), an add button, and
    double-click-to-rename as true in-place editing (no `prompt()` dialog).
 2. **Room-drawing hotkeys** — `N` (rectangle) / `Shift+N` (freeform) tools.
-3. **Room-relative object placement** — furniture/fixture catalog.
-4. **Wall thickness** — per-level default + per-wall override, standard
-   presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area.
-5. **Wall openings** — doors/windows/sliding doors, built on item 4's
-   `wallProps` infrastructure.
+3. **Wall thickness** — per-level default + per-wall override, standard
+   presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus
+   an `open` flag for open-concept (no-wall) edges and the generalized
+   `remapWallRefs` re-keying infrastructure that item 4 and item 5 both need.
+4. **Wall openings** — doors/windows/sliding doors, built on item 3's
+   `wallProps`/`remapWallRefs` infrastructure.
+5. **Room-relative object placement** — furniture/fixture catalog, with
+   optional wall-anchored placement (distance + position derived from a
+   host wall's interior face). Sequenced **after** items 3-4, not before —
+   see "Item 5" below for why.
 6. **Local storage autosave** — debounced, reuses `schemaVersion`/`migrateData`.
 7. **Hamburger menu + multi-project switcher** — backed by item 6.
+
+(Numbering above reflects final build order. Items 3-5 were reordered from
+an earlier draft of this roadmap after a second architecture review found
+object placement and wall openings both need infrastructure that wall
+thickness introduces — see each item's section for the reasoning.)
 
 ## File layout (post-split, with planned additions)
 
@@ -104,87 +114,170 @@ it go stale.
     code must use signed area regardless, since older data and `cutRoom`
     output aren't guaranteed to follow it.
 
-## Item 3 — room-relative object placement
-
-**Data shape:** `level.objects = [{id, type, roomId, x, y, w, d, rot, mirror}]`
-— absolute level coordinates plus a parent `roomId`. Rotation is an
-independent SVG `transform`, unrelated to the room's own geometry.
-
-**Why not anchored to a room corner or centroid** (both considered and
-rejected): a corner anchor drifts on any operation that moves that specific
-corner — including a wall drag through it (roughly half of all wall drags
-touch a rectangle's first corner), `deletePoint` changing which corner is
-first, and `cutRoom` rebuilding loops starting at an arbitrary vertex (a full
-jump, not a drift). A centroid anchor is better but still moves on operations
-like "Divide wall" that change the vertex count/positions without changing
-the room's footprint. Absolute coordinates avoid both failure modes entirely.
-
-**Movement rule:** objects move with their room **only on a whole-room
-translate** — `roomDrag` and `nudgeRoom`, both of which already compute a
-clean `{dx,dy}` delta; carry the room's objects along by that same delta.
-Reshaping a room (corner drag, wall drag, length/angle edit, divide, cut)
-intentionally leaves its objects in place — this is correct behavior, not a
-limitation to document.
-
-**Reparenting:** on drop, a point-in-polygon test against all rooms
-reassigns `roomId`. Deleting a room deletes its objects (with confirmation)
-or sets `roomId = null` (orphaned) — decide which when implementing.
-
-**Sequencing note:** if fixtures should snap against walls (cabinets,
-toilets flush to a wall), that wants interior wall faces, which don't exist
-until item 4. Current plan: build item 3 without wall-snapping (room-level
-snapping only, same as existing room drag), revisit wall-snapping as a
-refinement after item 4 lands. (Alternative considered: move item 3 after
-item 5 entirely — rejected for now to avoid delaying a simple, independent
-feature behind the hardest remaining geometry work.)
-
-## Item 4 — wall thickness + `wallProps`
+## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 
 `level.wallProps`, keyed by a **canonicalized endpoint-id pair** (sort the
 two point ids so the key doesn't depend on which room's loop created the
 wall — don't key off `w.a`/`w.b` directly, since `w.a` is arbitrary).
-Holds `{thickness, openings:[...]}` per wall (openings populated in item 5).
+Holds `{thickness, open, openings:[...]}` per wall (openings populated in
+item 4; `object.anchor` in item 5 references this same wall-key identity).
 
 - **Unset thickness means "use the level default"** — don't eagerly copy the
   default into every wall's props, or changing the level default later won't
   propagate to walls that never got an explicit override.
+- **`open` flag for open-concept (no-wall) edges** — a wall can be flagged
+  `wallProps[key].open = true` instead of getting a full-length opening
+  entry. Reasoning (from the second architecture review): a full-length
+  "open passage" opening breaks the split/length-change rules below (every
+  split point falls inside it; a length change leaves a stub or needs
+  clamping), while a flag has no length and both problems vanish. Define
+  `effThickness(w) = open ? 0 : (thickness ?? level.defaultThickness)` and
+  use it everywhere thickness is consulted — an effective thickness of 0
+  means the interior-offset code needs no special case (offset is to the
+  centerline). Don't draw a wall line for an open edge, but keep a thin
+  dashed hit-target on the active level so it stays selectable/draggable
+  (hidden in the shadow view). Doors/windows can't be placed on an open
+  wall (disallow in the inspector); if an edge with existing openings is
+  later flagged open, hide (don't delete) those openings. On merge, the
+  result is open only if both merged walls were.
 - **Interior dimensions/area:** offset each wall's centerline inward by half
-  its thickness, direction determined by **that room's winding order**
+  its `effThickness`, direction determined by **that room's winding order**
   (signed area) — a shared wall has a different interior face per side, so
   the current single `dimension label → w.room` assumption needs to become
   per-side. Intersect adjacent offset lines for interior corners. Handle
   collinear-neighbor and T-junction cases explicitly — parallel offset lines
   don't intersect.
-- **Per-operation `wallProps` rules** (needed for item 5's openings to
-  survive topology edits, so design these now even though openings aren't
-  populated yet):
-  - *Split* (`divideWall`, `insertPointOnWall`): copy thickness to both
-    halves. Assign each opening to whichever half contains it, shifting the
-    second half's offsets by the split position. Decide and document the
-    policy for an opening that straddles the split point (clamp, reject, or
-    keep on the larger half) — not yet decided, flag as an open call during
+- **`remapWallRefs(level, op)`** — one generalized re-keying function
+  covering *both* `wallProps` openings and item 5's `object.anchor`
+  references, since both are just "a reference to a wall key plus an
+  along-wall offset" and both need identical handling on every
+  topology-changing operation:
+  - *Split* (`divideWall`, `insertPointOnWall`): copy thickness/`open` to
+    both halves. Assign each opening/anchor to whichever half contains its
+    position (for an anchor, use the object's center), shifting the second
+    half's offsets by the split position. Decide and document the policy
+    for an opening that straddles the split point (clamp, reject, or keep
+    on the larger half) — not yet decided, flag as an open call during
     implementation.
   - *Merge* (`weldPoints` or `deletePoint` collapsing two wall keys into
-    one): concatenate openings, shifting the second wall's offsets by the
-    first wall's length; pick one thickness (e.g. keep the first wall's).
-    Drop props entirely if a weld collapses a wall to zero length.
-  - *Detach* (`detachRoom`, `detachCorner`): a previously-shared wall becomes
-    two overlapping walls. Copy thickness to both, but assign any opening to
-    only one side — duplicating it onto both would show two doors.
+    one): concatenate openings/shift anchors' `along` by the first wall's
+    length; pick one thickness (e.g. keep the first wall's); result is
+    `open` only if both inputs were. Drop props entirely if a weld collapses
+    a wall to zero length.
+  - *Detach* (`detachRoom`, `detachCorner`): a previously-shared wall
+    becomes two overlapping walls. Copy thickness/`open` to both, but
+    assign any opening to only one side (duplicating it onto both would
+    show two doors) — an object anchor follows the new wall key belonging
+    to its own `roomId`.
+  - *Wall gone entirely*: an anchor whose wall key no longer exists (or is
+    no longer in its object's `roomId`'s loop) becomes unanchored — see
+    item 5 — rather than erroring or orphaning data.
   - *Length changes* (wall-length edit): clamp an opening's **displayed**
     position if it would overhang a shortened wall; never mutate the stored
     offset data.
   - *Accepted gaps* (document, don't solve): openings are lost on edges that
-    `cutRoom` recreates; openings can't span a T-junction.
+    `cutRoom` recreates; openings/anchors can't span a T-junction.
 - **Selection model:** `sel` needs to address an opening by
   `{wallKey, openingId}`. With `renderInspector` already refactored into a
   lookup table (cleanup commit), add `object` and `opening` as two more
   entries rather than more branches.
 
-## Item 5 — wall openings
+## Item 4 — wall openings
 
 Doors (swing direction + a flip/mirror option for left/right-handed),
 windows, and sliding doors. Each has an offset along its host wall, measured
 from **the lower id of the wall's sorted endpoint pair** (stable regardless
-of which room's loop defined `w.a`/`w.b`). Built entirely on item 4's
-`wallProps`/openings design above — no new wall-identity mechanism needed.
+of which room's loop defined `w.a`/`w.b`). Built entirely on item 3's
+`wallProps`/`remapWallRefs` design above — no new wall-identity mechanism
+needed. (Open-concept "no wall" edges are a `wallProps` flag from item 3,
+not an opening type — see above.)
+
+## Item 5 — room-relative object placement
+
+**Sequenced after items 3-4, not before** (revised from an earlier draft of
+this roadmap): a wall-anchored object's position depends on the wall's
+*interior face*, which doesn't exist until item 3's thickness/`effThickness`
+machinery lands, and reuses item 3's `remapWallRefs` wall-identity handling
+directly rather than building a second mechanism. Building object anchors
+before interior faces exist would mean every anchored object jumps by half
+the wall's thickness once item 3 ships, unless migrated — not worth it when
+reordering avoids the problem entirely.
+
+**Why not plain absolute coordinates** (the original design for this item,
+since revised): real placement intent is relative to a wall — "the island's
+front edge is 42 inches from the wall behind it" — not a level-coordinate
+pair. Absolute coordinates don't capture that, and don't follow the wall if
+it moves.
+
+**Why not a general constraint solver**: a single wall anchor per object
+(no object-to-object anchors, no chains, no cycles) covers the realistic
+case without building a solver. Object-to-object anchoring (e.g. "butt this
+cabinet against its neighbor") is explicitly deferred — handle it as a
+one-time snap-on-drop computed at drop time, not a stored, maintained
+relationship.
+
+**Data shape:**
+```
+level.objects = [{
+  id, type, roomId, w, d, mirror,
+  x, y, rot,          // free: authoritative. anchored: last-resolved cache, rewritten by resolveObjects()
+  anchor: null | {
+    wall:  "pA|pB",   // canonical sorted endpoint key — same identity as wallProps
+    edge:  "back"|"front"|"left"|"right",  // which object edge faces the wall; fixes rot relative to the wall
+    along: ft,        // object center along the wall, measured from the lower-id endpoint (same convention as openings)
+    gap:   ft         // perpendicular distance from the wall's INTERIOR face on roomId's side to `edge`
+  }
+}]
+```
+
+- **Why a single perpendicular distance isn't enough on its own**: it fixes
+  only one degree of freedom. `along` (position along the wall) and `rot`
+  (derived from the wall's current angle) must also be tracked/derived, or
+  the object stops being parallel to its wall as soon as that wall rotates
+  via a corner drag.
+- **`resolveObjects(level)`** runs after every commit and during drags,
+  before render. For each anchored object, (re)computes `x`, `y`, `rot` from
+  the wall's current geometry, the interior face on `roomId`'s side (via
+  item 3's `effThickness`), and `edge`. The resolved values are cached in
+  `x`/`y`/`rot` (not solved fresh on every read) so a vanished anchor leaves
+  the object exactly where it last was.
+- **Anchor becomes invalid** (wall key no longer exists, or no longer
+  belongs to `roomId`'s loop) → set `anchor = null`. The object becomes a
+  free object at its last resolved position — this uniformly covers a
+  deleted, cut, or otherwise-vanished host wall, no special-case code needed.
+- **`roomId` decides which face**: a shared wall has two interior faces;
+  `roomId` says which one the gap is measured from, and also decides which
+  side an anchor follows through a `detachRoom`/`detachCorner` operation.
+- **Movement rules — never apply both to the same object:**
+  - *Anchored* objects follow their wall automatically via `resolveObjects`
+    — they do **not** need the whole-room-translate carry-along.
+  - *Free* (unanchored) objects use the original movement rule: they move
+    only on a whole-room translate (`roomDrag`/`nudgeRoom`, both of which
+    already compute a clean `{dx,dy}` delta to carry them along by).
+    Reshaping a room (corner/wall drag, divide, cut, length/angle edit)
+    intentionally leaves a free object in place — correct behavior, not a
+    limitation to document.
+- **Dragging:**
+  - *Anchored*: dragging edits `along`/`gap` in the wall's local frame, with
+    snapping and a live readout (e.g. `42" from wall`). Never silently
+    breaks the anchor — breaking it is an explicit "Unanchor" action in the
+    inspector. Rotation is disabled while anchored (it's derived).
+  - *Free*: drag/rotate freely as planned originally; the inspector shows a
+    computed, **unstored** "distance to nearest wall" readout for reference.
+- **Anchoring flow** (matches the CAD-style flow this was modeled on): an
+  inspector "Measure from wall…" action enters a pick-wall interaction mode
+  (one more entry in `tools.js`) — pick the object edge, then the wall, then
+  type the gap. Optionally, dropping a free object within snap tolerance of
+  a wall inside its room auto-anchors it.
+- **Reparenting:** on drop, a point-in-polygon test against all rooms
+  reassigns `roomId` (for both free and anchored objects — an anchored
+  object's wall must belong to its new `roomId`'s loop, or it unanchors).
+  Deleting a room deletes its objects (with confirmation) or sets
+  `roomId = null` (orphaned) — decide which when implementing.
+- **Out of scope for v1** (explicitly deferred, don't build): object-to-object
+  anchors, more than one constraint per object, a general constraint solver.
+- **Fallback if item 5 must ship before item 3 for some reason**: ship free
+  placement only (`anchor` always `null`, field reserved in the schema), add
+  anchoring once item 3/4 land. Do not ship anchors measured from the wall
+  *centerline* and redefine their meaning later — that silently breaks saved
+  data.
