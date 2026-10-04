@@ -9,8 +9,6 @@ behavior belongs in SPEC.md).
 
 ## Roadmap
 
-2.5. **Unify room naming with the double-click-in-place pattern** — see
-   detailed section below.
 3. **Wall thickness** — per-level default + per-wall override, standard
    presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus
    an `open` flag for open-concept (no-wall) edges and the generalized
@@ -47,34 +45,6 @@ messages.)
 | `js/storage.js` *(item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
 | `js/nav.js` *(item 7)* | Hamburger menu / project switcher. |
 | `test/` | Committed test suite (`npm test`, zero dependencies). Add tests here alongside any change to testable logic (model, geometry, persistence, interaction handlers) — see CONTRIBUTING.md. |
-
-## Item 2.5 — unify room naming with the double-click-in-place pattern
-
-Room naming should match the double-click-in-place pattern the project name
-and level name already use, in both places the room name appears:
-
-- **On the plan canvas**: the room name is rendered as SVG `<text>` (in
-  `drawLevel`'s label group, `js/render.js`) — not an HTML element, so
-  `contenteditable` doesn't apply directly to it. Double-clicking the
-  on-canvas name needs a small HTML overlay (a plain `<input>` or a
-  `contenteditable` `div`) positioned absolutely at the label's current
-  screen coordinates (via the same `toScreen()` transform `drawLevel`
-  already uses) when editing starts, removed when editing ends. Either
-  track pan/zoom while the overlay is open, or simplest: disable
-  pan/zoom while it's open, closing it on blur/Enter/Escape same as the
-  level-rename pattern.
-- **In the Inspector panel**: replace the `<input id="roomName">` with a
-  plain text span showing the name, double-click to enter the same in-place
-  edit mode (follow `startRenameLevel`'s control-flow pattern in
-  `js/app.js`: Enter commits and blurs, Escape cancels and reverts, blur
-  commits — not a live-every-keystroke update).
-- **Room renames must go through `commit()`** (undoable, matching every
-  other mutation) — not a direct mutation with no snapshot.
-- **Supersedes item 2's room-creation-focus mechanism**: item 2 focuses
-  `#roomName` as a plain input. Once this item lands, "immediately ready to
-  type" instead means entering the new in-place-edit mode on the name
-  display — update the post-creation behavior in both `addRoom()`
-  (`js/app.js`) and the `N`/`Shift+N` tools' room-completion path to match.
 
 ## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 

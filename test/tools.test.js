@@ -76,7 +76,7 @@ test("freeform tool: a self-intersecting (bowtie) shape is rejected and discards
   assert.equal(run(() => interaction), null, "a rejected shape discards the tool rather than leaving it open");
 });
 
-test("new room created via a drawing tool gets its name field focused", async () => {
+test("new room created via a drawing tool enters in-place rename mode on its name display", async () => {
   const { run, document } = loadApp();
   run(() => toggleDrawTool("rect"));
   run(() => interactionHandlers.rect.down(interaction, { clientX: 10, clientY: 10, button: 0, altKey: false, ctrlKey: false, metaKey: false }));
@@ -85,7 +85,11 @@ test("new room created via a drawing tool gets its name field focused", async ()
   // default action doesn't immediately steal it back - flush that.
   await new Promise(resolve => setTimeout(resolve, 10));
   const rn = document.getElementById("roomName");
-  assert.ok(rn._focused, "the room name field should end up focused");
+  assert.ok(rn._focused, "the room name display should end up focused");
+  // #roomName is no longer a plain <input> (ARCHITECTURE.md item 2.5) - it's
+  // the contenteditable display startRenameRoom() puts into edit mode.
+  assert.equal(rn.contentEditable, "true", "the room name display should be in contenteditable edit mode");
+  assert.ok(rn.classList.contains("editing"), "the room name display should carry the .editing class while in edit mode");
 });
 
 test("whole-room drag moves a welded neighbor along without distorting it", () => {

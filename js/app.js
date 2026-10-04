@@ -49,19 +49,19 @@ function addRoom(){
   focusRoomName();
 }
 
-/* "A room was just created" -> its name field is in edit mode, focused with
-   the text selected, ready to type over (same focus()+select() precedent as
-   the wall inspector's length input). Shared by "+ New room" and both
-   drawing tools so every entry point behaves identically. Deferred one task:
-   when the room is completed by a click on the plan, the browser's own
-   mousedown default action (moving focus to the clicked, non-focusable
-   svg / body) runs after our pointerdown handler and would steal focus
-   straight back. */
+/* "A room was just created" -> its name display enters the same in-place
+   edit mode a double-click would (startRenameRoom, js/inspector.js), text
+   selected and ready to type over. Shared by "+ New room" and both drawing
+   tools so every entry point behaves identically. Deferred one task: when
+   the room is completed by a click on the plan, the browser's own mousedown
+   default action (moving focus to the clicked, non-focusable svg / body)
+   runs after our pointerdown handler and would steal focus straight back. */
 function focusRoomName(){
   setTimeout(()=>{
     if(sel.type!=="room") return;
+    const r=activeLevel().rooms.find(x=>x.id===sel.id); if(!r) return;
     const rn=document.getElementById("roomName");
-    if(rn){ rn.focus(); rn.select(); }
+    if(rn) startRenameRoom(r, rn);
   },0);
 }
 
@@ -90,6 +90,12 @@ svg.addEventListener("pointerdown",(e)=>{
    only while a draw tool is active (Ctrl+click = free-angle vertex). */
 svg.addEventListener("contextmenu",(e)=>{ if(drawToolActive()) e.preventDefault(); });
 svg.addEventListener("pointerdown",(e)=>{
+  // A room-name rename is open (inspector or the canvas overlay, js/
+  // inspector.js's _editingRoomId): don't clear the selection or start a
+  // pan. The overlay itself lives outside the svg, so this only matters for
+  // a click elsewhere on the plan, whose default action still blurs the
+  // overlay (committing the rename) without us doing anything else here.
+  if(_editingRoomId) return;
   clearSel();
   startPan(e);
 });
@@ -109,6 +115,7 @@ svg.addEventListener("pointercancel",endPointer);
 
 svg.addEventListener("wheel",(e)=>{
   e.preventDefault();
+  if(_editingRoomId) return;   // don't zoom out from under an open canvas rename overlay
   const bx=svgBox(); const mx=e.clientX-bx.left, my=e.clientY-bx.top;
   const [wx,wy]=toWorld(mx,my);
   const factor = Math.exp(-e.deltaY*0.0015);

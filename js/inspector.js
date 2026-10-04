@@ -112,6 +112,60 @@ function renderPointInspector(f, body){
   setReadout("Corner", `${fmtFt(p.x)} · ${fmtFt(p.y)}`);
 }
 
+/* True while a room name is being edited in place, either here (the
+   inspector's "roomName" display) or via the on-canvas overlay js/render.js
+   creates for the plan label — both call startRenameRoom below, and share
+   this one flag as their "another rename is already in progress" guard
+   (mirroring `_editingLevelId` in js/app.js). Also used by js/app.js to
+   suppress pan/zoom while a canvas rename is open. */
+let _editingRoomId = null;
+
+/* True in-place rename for a room name, following startRenameLevel's exact
+   control-flow pattern (js/app.js): Enter commits and blurs, Escape cancels
+   and reverts, blur commits — and, unlike the old #roomName <input> this
+   replaces, the commit goes through commit() so a room rename is undoable.
+   `nameEl` is whatever contenteditable element is showing the name — the
+   inspector's display span, or the on-canvas overlay div js/render.js builds
+   — so both entry points share this exact logic instead of each reimplementing
+   it. `opts.onFinish()`, if given, runs after editing ends either way (used
+   by the canvas overlay to remove itself and re-enable pan/zoom). Returns
+   false without starting anything if a rename is already in progress
+   (here or on the level panel). */
+function startRenameRoom(room, nameEl, opts){
+  opts = opts || {};
+  if(_editingLevelId || _editingRoomId) return false;
+  _editingRoomId = room.id;
+  nameEl.contentEditable = "true";
+  nameEl.spellcheck = false;
+  nameEl.classList.add("editing");
+  nameEl.focus();
+  const range=document.createRange(); range.selectNodeContents(nameEl);
+  const selection=window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+
+  function finish(apply){
+    nameEl.removeEventListener("keydown", onKey);
+    nameEl.removeEventListener("blur", onBlur);
+    nameEl.contentEditable = "false";
+    nameEl.classList.remove("editing");
+    _editingRoomId = null;
+    const text = nameEl.textContent.trim();
+    if(apply && text && text!==room.name){
+      commit(()=>{ room.name = text; });
+    } else {
+      nameEl.textContent = room.name;
+    }
+    if(opts.onFinish) opts.onFinish();
+  }
+  function onKey(e){
+    if(e.key==="Enter"){ e.preventDefault(); nameEl.blur(); }
+    else if(e.key==="Escape"){ e.preventDefault(); finish(false); nameEl.blur(); }
+  }
+  function onBlur(){ finish(true); }
+  nameEl.addEventListener("keydown", onKey);
+  nameEl.addEventListener("blur", onBlur);
+  return true;
+}
+
 function renderRoomInspector(f, body){
   const r=f.rooms.find(x=>x.id===sel.id); if(!r){clearSel();return;}
   const area=polyArea(f,r.loop);
@@ -120,7 +174,7 @@ function renderRoomInspector(f, body){
   body.innerHTML = `
     <div class="kicker">ROOM</div>
     <span class="field-label">Room name</span>
-    <input type="text" id="roomName" value="${esc(r.name)}">
+    <div class="room-name-display" id="roomName" title="Double-click to rename">${esc(r.name)}</div>
     <div style="height:10px"></div>
     <span class="field-label">Floor area</span>
     <div class="bigval">${Math.round(area)} sf</div>
@@ -144,8 +198,7 @@ function renderRoomInspector(f, body){
     <label class="toggle row" style="margin-top:10px"><input type="checkbox" id="lockRoom" ${r.locked?"checked":""}><span>Lock geometry</span></label>
     <p class="muted" style="margin-top:4px">Cut trims this room's shape out of any room it overlaps. Lock freezes this room so moving a connected room won't reshape it.</p>`;
   const rn=document.getElementById("roomName");
-  rn.oninput=()=>{ r.name=rn.value; render(); };           // live label update, keeps focus
-  rn.onchange=()=>renderInspector();                        // refresh header on blur/enter
+  rn.ondblclick=()=> startRenameRoom(r, rn);
   body.querySelectorAll("[data-nudge]").forEach(btn=>{
     btn.onclick=()=>nudgeRoom(r, btn.dataset.nudge);
   });
