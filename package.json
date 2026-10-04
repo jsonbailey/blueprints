@@ -1,0 +1,8 @@
+{
+  "name": "blueprints",
+  "private": true,
+  "description": "Interactive floor-plan editor (SVG + vanilla JS, runs offline). This file exists only to run the test suite - the app itself has zero dependencies and no build step.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

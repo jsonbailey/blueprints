@@ -6,7 +6,9 @@ folders need to travel with it), or use it hosted on GitHub Pages:
 
 **https://jsonbailey.github.io/blueprints/**
 
-See [SPEC.md](SPEC.md) for the full feature set and data model.
+See [SPEC.md](SPEC.md) for the full feature set and data model, and
+[ARCHITECTURE.md](ARCHITECTURE.md) for what's planned next. Running the test
+suite (`npm test`) is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status: pre-1.0
 

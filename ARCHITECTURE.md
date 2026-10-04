@@ -46,6 +46,7 @@ messages.)
 | `js/geometry.js` *(optional, item 3)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
 | `js/storage.js` *(item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
 | `js/nav.js` *(item 7)* | Hamburger menu / project switcher. |
+| `test/` | Committed test suite (`npm test`, zero dependencies). Add tests here alongside any change to testable logic (model, geometry, persistence, interaction handlers) — see CONTRIBUTING.md. |
 
 ## Item 2.5 — unify room naming with the double-click-in-place pattern
 
