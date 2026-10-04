@@ -54,15 +54,16 @@
   #projectName:focus{background:rgba(236,232,223,.12);box-shadow:0 0 0 1px var(--blueprint)}
   .tb-readout{flex:1 1 auto;border-right:none}
   .tb-readout .tb-value{color:var(--markup)}
-  .tb-floor{display:flex;gap:0}
-  .floortab{
+  .tb-levels{display:flex;gap:0;overflow-x:auto;max-width:44vw}
+  .leveltab{
     appearance:none;border:none;background:transparent;color:var(--ink-dim);
     font-family:var(--ui);font-size:12px;letter-spacing:.1em;text-transform:uppercase;
-    padding:0 14px;cursor:pointer;border-bottom:2px solid transparent;
+    padding:0 14px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;
   }
-  .floortab:hover{color:var(--ink)}
-  .floortab[aria-pressed="true"]{color:var(--ink);border-bottom-color:var(--markup)}
-  .floortab:focus-visible{outline:2px solid var(--markup);outline-offset:-2px}
+  .leveltab:hover{color:var(--ink)}
+  .leveltab[aria-pressed="true"]{color:var(--ink);border-bottom-color:var(--markup)}
+  .leveltab:focus-visible{outline:2px solid var(--markup);outline-offset:-2px}
+  .leveltab.add{padding:0 10px;font-size:15px;letter-spacing:0}
 
   /* ---- Body split ---- */
   .work{flex:1 1 auto;display:flex;min-height:0}
@@ -145,10 +146,8 @@
   </div>
   <div class="tb-cell">
     <span class="tb-label">Sheet</span>
-    <div class="tb-floor" role="group" aria-label="Active floor">
-      <button class="floortab" id="tab-main" aria-pressed="true">Main</button>
-      <button class="floortab" id="tab-basement" aria-pressed="false">Basement</button>
-    </div>
+    <!-- One tab per level, rendered by renderLevelTabs(); "+" adds a level. -->
+    <div class="tb-levels" id="levelTabs" role="group" aria-label="Active level"></div>
   </div>
   <div class="tb-cell">
     <span class="tb-label">Scale</span>
@@ -178,13 +177,13 @@
     <div class="section">
       <h2>Rooms</h2>
       <div class="btngrid"><button class="btn primary" id="btnAddRoom">+ New room</button></div>
-      <p class="muted" style="margin-top:8px">Adds a room to the current floor. Drag it by its name to snap it into place, then rename it in the Inspector.</p>
+      <p class="muted" style="margin-top:8px">Adds a room to the current level. Drag it by its name to snap it into place, then rename it in the Inspector.</p>
     </div>
 
     <!-- View -->
     <div class="section">
       <h2>View</h2>
-      <label class="toggle row"><input type="checkbox" id="optShadow" checked><span>Show other floor as shadow</span></label>
+      <label class="toggle row"><input type="checkbox" id="optShadow" checked><span>Show other levels as shadow</span></label>
       <label class="toggle row"><input type="checkbox" id="optDims" checked><span>Wall dimensions</span></label>
       <label class="toggle row"><input type="checkbox" id="optLabels" checked><span>Room names &amp; area</span></label>
       <label class="toggle row"><input type="checkbox" id="optGrid" checked><span>Grid</span></label>
@@ -207,8 +206,8 @@
     <!-- Legend -->
     <div class="section">
       <h2>Legend</h2>
-      <div class="legend-item"><span class="swatch" style="border-top-color:var(--graphite)"></span> Active floor walls</div>
-      <div class="legend-item"><span class="swatch" style="border-top-color:var(--blueprint)"></span> Other floor (shadow)</div>
+      <div class="legend-item"><span class="swatch" style="border-top-color:var(--graphite)"></span> Active level walls</div>
+      <div class="legend-item"><span class="swatch" style="border-top-color:var(--blueprint)"></span> Other levels (shadow)</div>
       <div class="legend-item"><span class="swatch" style="border-top-color:var(--markup)"></span> Selected wall</div>
       <div class="legend-item"><span class="swatch dot"></span> Corner — drag to anchor</div>
     </div>
@@ -264,27 +263,29 @@
 
 /* =========================================================================
    Interactive plan editor
-   Model: each floor is a graph of corner POINTS joined by WALLS.
-   Rooms reference an ordered loop of point ids. Adjacent rooms that share a
-   corner share the same point id, so dragging that corner moves every wall
-   meeting there ("anchoring"). Both floors live in one coordinate frame
-   (feet), so the inactive floor can be drawn beneath as a shadow.
+   Model: the plan is an ordered array of LEVELS (data.levels), one of which
+   is active (data.activeLevelId). Each level is a graph of corner POINTS
+   joined by WALLS. Rooms reference an ordered loop of point ids. Adjacent
+   rooms that share a corner share the same point id, so dragging that corner
+   moves every wall meeting there ("anchoring"). All levels live in one
+   coordinate frame (feet), so inactive levels marked visible can be drawn
+   beneath the active one as a shadow.
    ========================================================================= */
 
-/* ---- Starting layout, in feet, for each floor. Empty by default — use
-   "+ New room" to add rooms, or Open a saved .json plan. Each entry, if you
-   want to seed a floor programmatically, is a rectangle
-   [name, x, y, w, h, kind]. ---- */
-const MAIN_RECTS = [];
-
-const BASEMENT_RECTS = [];
+/* ---- Starting layout, in feet, for the single level a fresh project starts
+   with ("Level 1"). Empty by default — use "+ New room" to add rooms, or Open
+   a saved .json plan. Each entry, if you want to seed that level
+   programmatically, is a rectangle [name, x, y, w, h, kind]. ---- */
+const SEED_RECTS = [];
 
 /* ---------- geometry helpers ---------- */
 function snapInch(v){ return Math.round(v*12)/12; }      // author coords to nearest inch
 const MERGE_TOL = 0.06;                                  // ft — only near-identical corners merge
 
-let _pid = 0;                                            // global unique point-id counter
-function buildFloor(rects){
+let _pid = 0;                                            // global unique point/room-id counter
+let _lid = 0;                                            // global unique level-id counter
+/* Build a level's geometry ({points, walls, rooms}) from seed rectangles. */
+function buildLevel(rects){
   const points = [];
   function getPoint(x,y){
     x = snapInch(x); y = snapInch(y);
@@ -299,7 +300,7 @@ function buildFloor(rects){
     rooms.push({id:"r"+i, name, kind:kind||"room", loop:[a,b,c,d]});
   });
   const f = {points, walls:[], rooms};
-  return indexFloor(f);
+  return indexLevel(f);
 }
 
 /* Walls are DERIVED from room loops: every edge of every room is a wall, and an
@@ -320,7 +321,7 @@ function deriveWalls(f){
   f.walls=walls;
   return f;
 }
-function indexFloor(f){
+function indexLevel(f){
   f._pt = new Map(f.points.map(p=>[p.id,p]));
   deriveWalls(f);
   return f;
@@ -497,21 +498,72 @@ function cutRoom(f, cutter){
   return {changed, dropped, err:false};
 }
 
+/* Mint a new level (fresh unique id, visible) whose geometry is built from
+   seed rectangles — [] for a blank level. */
+function makeLevel(name, rects){
+  const g = buildLevel(rects||[]);
+  return indexLevel({id:"lvl"+(_lid++), name, visible:true, points:g.points, walls:g.walls, rooms:g.rooms});
+}
 function freshData(){
-  const d = { main:indexFloor(buildFloor(MAIN_RECTS)), basement:indexFloor(buildFloor(BASEMENT_RECTS)) };
-  syncPid(d);
+  const lvl = makeLevel("Level 1", SEED_RECTS);
+  const d = { levels:[lvl], activeLevelId:lvl.id };
+  syncIds(d);
   return d;
 }
-/* Ensure the global id counter is above every numeric id already present, so
-   newly minted point/room ids can never collide with loaded data. */
-function syncPid(d){
-  let mx=0;
-  for(const k of ["main","basement"]){
-    if(!d[k]) continue;
-    (d[k].points||[]).forEach(p=>{ const m=/(\d+)$/.exec(p.id); if(m) mx=Math.max(mx,+m[1]); });
-    (d[k].rooms||[]).forEach(r=>{ const m=/(\d+)$/.exec(r.id); if(m) mx=Math.max(mx,+m[1]); });
+/* Ensure the global id counters are above every numeric id already present,
+   so newly minted point/room ids (_pid) and level ids (_lid) can never collide
+   with loaded data. */
+function syncIds(d){
+  let mx=0, lmx=-1;
+  const num=id=>{ const m=/(\d+)$/.exec(String(id)); return m ? +m[1] : null; };
+  for(const l of (d.levels||[])){
+    if(!l) continue;
+    const ln=num(l.id); if(ln!=null) lmx=Math.max(lmx,ln);
+    (l.points||[]).forEach(p=>{ const n=num(p.id); if(n!=null) mx=Math.max(mx,n); });
+    (l.rooms||[]).forEach(r=>{ const n=num(r.id); if(n!=null) mx=Math.max(mx,n); });
   }
   _pid = Math.max(_pid, mx+1);
+  _lid = Math.max(_lid, lmx+1);
+}
+
+/* ---------- persisted schema + migrations ----------
+   Every persisted plan (saved .json, undo snapshots, the Reset baseline)
+   carries `schemaVersion`. To change the persisted shape: append a migration
+   function to `migrations` and bump CURRENT_SCHEMA_VERSION — never change the
+   shape silently. migrations[i] upgrades a raw object from version i to i+1
+   and must be pure (no globals, no id minting); it may leave level ids /
+   names / `visible` unset, since loadData() fills those in afterwards. */
+const CURRENT_SCHEMA_VERSION = 1;
+const migrations = [
+  /* 0 → 1: pre-versioning files used two fixed floors {main, basement}.
+     They become two levels "Main" and "Basement" (both visible), Main active.
+     Ids are left unset for loadData() to mint. */
+  function fromLegacyMainBasement(raw){
+    if(Array.isArray(raw.levels)) return {...raw};   // unversioned but already level-shaped
+    if(!raw.main || !raw.basement) throw new Error("not a saved plan: no levels or main/basement floors");
+    const {main, basement, ...rest} = raw;
+    return {...rest,
+      levels:[ {...main, name:"Main", visible:true}, {...basement, name:"Basement", visible:true} ],
+      activeLevelId:null};
+  },
+];
+/* Upgrade a raw parsed plan object of any known version to the current
+   schema. Generic dispatcher — standalone so other persistence paths can
+   reuse it. Does not mutate `raw`. Throws if the object isn't a plan or was
+   written by a newer version of the app. */
+function migrateData(raw){
+  if(!raw || typeof raw!=="object" || Array.isArray(raw)) throw new Error("not a saved plan");
+  let v = raw.schemaVersion==null ? 0 : raw.schemaVersion;
+  if(!Number.isInteger(v) || v<0) throw new Error("invalid schemaVersion");
+  if(v > CURRENT_SCHEMA_VERSION){
+    const err=new Error("schemaVersion "+v+" is newer than this app supports ("+CURRENT_SCHEMA_VERSION+")");
+    err.tooNew=true; throw err;
+  }
+  let obj = raw;
+  while(v < CURRENT_SCHEMA_VERSION){ obj = migrations[v](obj); v++; }
+  obj = {...obj, schemaVersion:CURRENT_SCHEMA_VERSION};
+  if(!Array.isArray(obj.levels)) throw new Error("not a saved plan: missing levels");
+  return obj;
 }
 
 /* ---------- formatting ---------- */
@@ -557,9 +609,8 @@ projNameEl.addEventListener("keydown", e=>{
 projNameEl.addEventListener("blur", ()=> setProjectName(projNameEl.textContent));
 
 /* ---------- app state ---------- */
-let data = freshData();
+let data = freshData();             // {levels:[level, ...], activeLevelId}
 const ORIGINAL = JSON.stringify(stripIdx(data));
-let activeKey = "main";
 let sel = {type:null, id:null};
 let movingEnd = "b";                 // which wall endpoint moves when length is edited
 let cornerRoom = null;               // which room's corner is targeted for angle ops
@@ -568,16 +619,42 @@ const opts = {shadow:true, dims:true, labels:true, grid:true, snap:0.25, snapCon
 let snapViz = null;   // transient drag-time snap feedback {targetId?, vx?, vy?}
 const history = [];
 
-function activeFloor(){ return data[activeKey]; }
-function otherFloor(){ return data[activeKey==="main"?"basement":"main"]; }
+function activeLevel(){ return data.levels.find(l=>l.id===data.activeLevelId) || data.levels[0]; }
+/* Every level other than the active one that is marked visible — drawn as a
+   shadow beneath the active level (when opts.shadow is on). */
+function otherLevels(){ const a=activeLevel(); return data.levels.filter(l=>l!==a && l.visible); }
 
+/* Plain-JSON form of the plan (no _pt index), at the current schema version —
+   used for save, undo snapshots and the Reset baseline. */
 function stripIdx(d){
-  const out={}; for(const k of ["main","basement"]) out[k]={points:d[k].points,walls:d[k].walls,rooms:d[k].rooms};
-  return out;
+  return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    activeLevelId: d.activeLevelId,
+    levels: d.levels.map(l=>({id:l.id, name:l.name, visible:l.visible, points:l.points, walls:l.walls, rooms:l.rooms})),
+  };
 }
-function loadData(obj){
-  data = {main:indexFloor(obj.main), basement:indexFloor(obj.basement)};
-  syncPid(data);
+/* Rebuild `data` from a parsed plan object of any supported schema version
+   (migrated first via migrateData). Then normalizes: missing/duplicate level
+   ids are minted fresh, missing names become "Level N", missing `visible`
+   defaults to true, and an unknown activeLevelId falls back to the first
+   level. Throws (leaving `data` untouched) if the object isn't a plan. */
+function loadData(raw){
+  const obj = migrateData(raw);
+  const src = obj.levels.filter(l=>l && typeof l==="object");
+  let activeId = obj.activeLevelId;
+  syncIds({levels:src});               // bump _pid/_lid above everything in the file first
+  const seen=new Set();
+  const levels = src.map((l,i)=>{
+    const id = (typeof l.id==="string" && l.id && !seen.has(l.id)) ? l.id : "lvl"+(_lid++);
+    seen.add(id);
+    const name = (typeof l.name==="string" && l.name.trim()) ? l.name : "Level "+(i+1);
+    return indexLevel({id, name, visible: l.visible!==false,
+      points:l.points||[], walls:l.walls||[], rooms:l.rooms||[]});
+  });
+  if(!levels.length) levels.push(makeLevel("Level 1", []));
+  if(!levels.some(l=>l.id===activeId)) activeId = levels[0].id;
+  data = {levels, activeLevelId:activeId};
+  syncIds(data);
 }
 function snapshot(){
   history.push(JSON.stringify(stripIdx(data)));
@@ -625,19 +702,21 @@ function render(){
 
   if(opts.grid) drawGrid(W,H);
 
-  // shadow (other floor) underneath
-  if(opts.shadow) drawFloor(otherFloor(), {shadow:true});
-  // active floor
-  drawFloor(activeFloor(), {shadow:false});
+  renderLevelTabs();
+
+  // shadow (every other visible level) underneath
+  if(opts.shadow) otherLevels().forEach(l=>drawLevel(l, {shadow:true}));
+  // active level
+  drawLevel(activeLevel(), {shadow:false});
 
   if(snapViz){
     const W=svg.clientWidth, H=svg.clientHeight; const g=el("g",{});
-    if(snapViz.edge){ const A=ptOf(activeFloor(),snapViz.edge.a), B=ptOf(activeFloor(),snapViz.edge.b);
+    if(snapViz.edge){ const A=ptOf(activeLevel(),snapViz.edge.a), B=ptOf(activeLevel(),snapViz.edge.b);
       if(A&&B){ const [ax,ay]=toScreen(A.x,A.y),[bx,by]=toScreen(B.x,B.y);
         g.appendChild(el("line",{x1:ax,y1:ay,x2:bx,y2:by,stroke:"var(--markup)","stroke-width":4,opacity:0.5,"stroke-linecap":"round"})); } }
     if(snapViz.gx!=null){ const [sx]=toScreen(snapViz.gx,0); g.appendChild(el("line",{x1:sx,y1:0,x2:sx,y2:H,stroke:"var(--markup)","stroke-width":1,"stroke-dasharray":"3 4",opacity:0.75})); }
     if(snapViz.gy!=null){ const [,sy]=toScreen(0,snapViz.gy); g.appendChild(el("line",{x1:0,y1:sy,x2:W,y2:sy,stroke:"var(--markup)","stroke-width":1,"stroke-dasharray":"3 4",opacity:0.75})); }
-    if(snapViz.targetId){ const tp=ptOf(activeFloor(),snapViz.targetId); if(tp){ const [sx,sy]=toScreen(tp.x,tp.y); g.appendChild(el("circle",{cx:sx,cy:sy,r:11,fill:"none",stroke:"var(--markup)","stroke-width":2})); } }
+    if(snapViz.targetId){ const tp=ptOf(activeLevel(),snapViz.targetId); if(tp){ const [sx,sy]=toScreen(tp.x,tp.y); g.appendChild(el("circle",{cx:sx,cy:sy,r:11,fill:"none",stroke:"var(--markup)","stroke-width":2})); } }
     svg.appendChild(g);
   }
 
@@ -663,7 +742,7 @@ function drawGrid(W,H){
   svg.appendChild(g);
 }
 
-function drawFloor(f, {shadow}){
+function drawLevel(f, {shadow}){
   const gRooms = el("g",{}), gWalls = el("g",{}), gDims = el("g",{}), gLabels = el("g",{}), gHandles = el("g",{}), gBadge = el("g",{});
   const lockedSet = shadow ? new Set() : lockedPointIds(f);
 
@@ -698,7 +777,7 @@ function drawFloor(f, {shadow}){
     }
     gWalls.appendChild(line);
 
-    // dimension label (active floor only), pulled INSIDE the room so it never
+    // dimension label (active level only), pulled INSIDE the room so it never
     // sits on the shared line / overlaps the neighbouring room
     if(!shadow && opts.dims){
       const len = Math.hypot(b.x-a.x,b.y-a.y);
@@ -763,7 +842,7 @@ function drawFloor(f, {shadow}){
     });
   }
 
-  // corner handles (active floor only)
+  // corner handles (active level only)
   if(!shadow){
     f.points.forEach(p=>{
       const [sx,sy]=toScreen(p.x,p.y);
@@ -807,7 +886,7 @@ function wallById(f,id){ return f.walls.find(w=>w.id===id); }
 function renderInspector(){
   const empty=document.getElementById("inspectorEmpty");
   const body=document.getElementById("inspectorBody");
-  const f=activeFloor();
+  const f=activeLevel();
   if(sel.type==null){ empty.hidden=false; body.hidden=true; setReadout("Cursor","move over the plan"); return; }
   empty.hidden=true; body.hidden=false;
 
@@ -961,7 +1040,7 @@ function renderInspector(){
 }
 
 function nudgeRoom(r, dir){
-  const f=activeFloor(); const step = opts.snap>0 ? opts.snap : 0.25;
+  const f=activeLevel(); const step = opts.snap>0 ? opts.snap : 0.25;
   const dx = dir==="left"?-step:dir==="right"?step:0;
   const dy = dir==="up"?-step:dir==="down"?step:0;
   snapshot();
@@ -970,7 +1049,7 @@ function nudgeRoom(r, dir){
 }
 
 function addRoom(){
-  const f=activeFloor();
+  const f=activeLevel();
   snapshot();
   const W=svg.clientWidth||800, H=svg.clientHeight||600;
   const w=12, h=10;
@@ -987,7 +1066,7 @@ function addRoom(){
 }
 
 function applyLength(w){
-  const f=activeFloor();
+  const f=activeLevel();
   const val=parseLen(document.getElementById("lenInput").value);
   if(isNaN(val)||val<=0) return;
   const a=ptOf(f,w.a), b=ptOf(f,w.b);
@@ -1094,7 +1173,7 @@ function pastThreshold(d,e){
 
 function startDragPoint(e,id){
   e.stopPropagation();
-  const f=activeFloor(); const p=ptOf(f,id);
+  const f=activeLevel(); const p=ptOf(f,id);
   selectPoint(id);
   if(lockedPointIds(f).has(id)){ setReadout("Locked","corner belongs to a locked room"); return; }
   drag={id, startClient:{x:e.clientX,y:e.clientY},
@@ -1105,7 +1184,7 @@ function startDragPoint(e,id){
 
 function startDragRoom(e,roomId){
   e.stopPropagation();
-  const f=activeFloor(); const room=f.rooms.find(r=>r.id===roomId); if(!room) return;
+  const f=activeLevel(); const room=f.rooms.find(r=>r.id===roomId); if(!room) return;
   selectRoom(roomId);
   if(room.locked){ setReadout("Locked","unlock this room to move it"); return; }
   // Move every corner of the room by the same offset. Shared corners carry
@@ -1121,7 +1200,7 @@ function startDragRoom(e,roomId){
 
 function startDragWall(e,id){
   e.stopPropagation();
-  const f=activeFloor(); const w=wallById(f,id); if(!w) return;
+  const f=activeLevel(); const w=wallById(f,id); if(!w) return;
   selectWall(id);
   const locked=lockedPointIds(f);
   if(locked.has(w.a) && locked.has(w.b)){ setReadout("Locked","wall belongs to a locked room"); return; }
@@ -1142,7 +1221,7 @@ function startDragWall(e,id){
 let pan=null;
 svg.addEventListener("pointerdown",(e)=>{
   // Active walls + corner handles call stopPropagation, so anything reaching
-  // here is empty space / a fill / the shadow floor — start a pan.
+  // here is empty space / a fill / a shadow level — start a pan.
   clearSel();
   pan={x:e.clientX,y:e.clientY,ox:view.ox,oy:view.oy};
   svg.classList.add("panning");
@@ -1154,7 +1233,7 @@ svg.addEventListener("pointermove",(e)=>{
     if(!pastThreshold(drag,e)) return;
     commitCaptured(drag);
     const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
-    const f=activeFloor(); const p=ptOf(f,drag.id);
+    const f=activeLevel(); const p=ptOf(f,drag.id);
     let nx=applySnap(drag.startPt.x + (wx-drag.startWorld[0]));
     let ny=applySnap(drag.startPt.y + (wy-drag.startWorld[1]));
     drag.snapTarget=null; drag.snapEdge=null; snapViz=null;
@@ -1172,7 +1251,7 @@ svg.addEventListener("pointermove",(e)=>{
     if(!pastThreshold(wallDrag,e)) return;
     commitCaptured(wallDrag);
     const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
-    const f=activeFloor(); const a=ptOf(f,wallDrag.aId), b=ptOf(f,wallDrag.bId);
+    const f=activeLevel(); const a=ptOf(f,wallDrag.aId), b=ptOf(f,wallDrag.bId);
     let delta;
     if(wallDrag.axis==="y"){
       delta = applySnap(wallDrag.aStart.y + (wy-wallDrag.startWorld[1])) - wallDrag.aStart.y;
@@ -1192,7 +1271,7 @@ svg.addEventListener("pointermove",(e)=>{
     const [wx,wy]=toWorld(e.clientX-bx.left,e.clientY-bx.top);
     let dx = applySnap(roomDrag.ref.x + (wx-roomDrag.startWorld[0])) - roomDrag.ref.x;
     let dy = applySnap(roomDrag.ref.y + (wy-roomDrag.startWorld[1])) - roomDrag.ref.y;
-    const f=activeFloor();
+    const f=activeLevel();
     snapViz=null;
     if(opts.snapConnect && !e.altKey){
       const s=computeRoomSnap(f, roomDrag.starts, dx, dy);
@@ -1219,10 +1298,10 @@ svg.addEventListener("pointermove",(e)=>{
 function endPointer(e){
   if(drag){
     if(drag.active && drag.snapTarget){
-      weldPoints(activeFloor(), drag.id, drag.snapTarget);
+      weldPoints(activeLevel(), drag.id, drag.snapTarget);
       sel={type:"point", id:drag.snapTarget};
     } else if(drag.active && drag.snapEdge){
-      const f=activeFloor(); const p=ptOf(f,drag.id);
+      const f=activeLevel(); const p=ptOf(f,drag.id);
       const mid=insertPointOnWall(f, drag.snapEdge.a, drag.snapEdge.b, p.x, p.y);
       if(mid){ weldPoints(f, drag.id, mid); sel={type:"point", id:mid}; }
     }
@@ -1232,7 +1311,7 @@ function endPointer(e){
   if(wallDrag){ wallDrag=null; renderInspector(); }
   if(roomDrag){
     if(roomDrag.active && opts.snapConnect){
-      const f=activeFloor(); const inRoom=new Set(roomDrag.starts.map(s=>s.id)); const locked=lockedPointIds(f);
+      const f=activeLevel(); const inRoom=new Set(roomDrag.starts.map(s=>s.id)); const locked=lockedPointIds(f);
       for(const s of roomDrag.starts){
         const p=ptOf(f,s.id); if(!p) continue;
         let tgt=null;
@@ -1264,9 +1343,9 @@ svg.addEventListener("wheel",(e)=>{
 
 /* ---------- fit to view ---------- */
 function fit(){
-  const floors = opts.shadow ? [activeFloor(),otherFloor()] : [activeFloor()];
+  const levels = opts.shadow ? [activeLevel(), ...otherLevels()] : [activeLevel()];
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-  floors.forEach(f=>f.points.forEach(p=>{minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}));
+  levels.forEach(f=>f.points.forEach(p=>{minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}));
   if(!isFinite(minX)) return;
   const W=svg.clientWidth,H=svg.clientHeight,pad=48;
   const sx=(W-2*pad)/Math.max(1,maxX-minX), sy=(H-2*pad)/Math.max(1,maxY-minY);
@@ -1277,14 +1356,52 @@ function fit(){
 }
 
 /* ---------- UI wiring ---------- */
-function setFloor(key){
-  activeKey=key; sel={type:null,id:null};
-  document.getElementById("tab-main").setAttribute("aria-pressed", key==="main");
-  document.getElementById("tab-basement").setAttribute("aria-pressed", key==="basement");
+/* Level tabs: one button per level plus "+" to add a level. Called from every
+   render(); the buttons are only rebuilt when the level list (ids/names)
+   changes, otherwise just aria-pressed is refreshed — so keyboard focus on a
+   tab survives re-renders. Minimal by design; a richer level panel (per-level
+   visibility toggles etc.) is a follow-up. */
+const levelTabsEl = document.getElementById("levelTabs");
+let _levelTabsSig = null;
+function renderLevelTabs(){
+  const activeId = activeLevel().id;
+  const sig = JSON.stringify(data.levels.map(l=>[l.id,l.name]));
+  if(sig !== _levelTabsSig){
+    _levelTabsSig = sig;
+    levelTabsEl.textContent = "";
+    data.levels.forEach(l=>{
+      const b=document.createElement("button");
+      b.className="leveltab"; b.dataset.level=l.id; b.textContent=l.name;
+      b.title="Double-click to rename";
+      b.onclick=()=>setLevel(l.id);
+      b.ondblclick=()=>renameLevel(l.id);
+      levelTabsEl.appendChild(b);
+    });
+    const add=document.createElement("button");
+    add.className="leveltab add"; add.textContent="+";
+    add.title="Add level"; add.setAttribute("aria-label","Add level");
+    add.onclick=addLevel;
+    levelTabsEl.appendChild(add);
+  }
+  levelTabsEl.querySelectorAll("[data-level]").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.level===activeId)));
+}
+function setLevel(id){
+  if(!data.levels.some(l=>l.id===id)) return;
+  data.activeLevelId=id; sel={type:null,id:null};
   render(); renderInspector();
 }
-document.getElementById("tab-main").onclick=()=>setFloor("main");
-document.getElementById("tab-basement").onclick=()=>setFloor("basement");
+function addLevel(){
+  snapshot();
+  const lvl = makeLevel("Level "+(data.levels.length+1), []);
+  data.levels.push(lvl);
+  setLevel(lvl.id);
+}
+function renameLevel(id){
+  const l=data.levels.find(x=>x.id===id); if(!l) return;
+  const name=prompt("Level name:", l.name);
+  if(name==null || !name.trim() || name.trim()===l.name) return;
+  snapshot(); l.name=name.trim(); render();
+}
 
 document.getElementById("optShadow").onchange=e=>{opts.shadow=e.target.checked;render();};
 document.getElementById("optDims").onchange  =e=>{opts.dims=e.target.checked;render();};
@@ -1296,7 +1413,7 @@ document.getElementById("btnFit").onclick=fit;
 document.getElementById("btnAddRoom").onclick=addRoom;
 document.getElementById("btnUndo").onclick=undo;
 document.getElementById("btnReset").onclick=()=>{
-  if(!confirm("Reset both floors to blank? Unsaved edits will be lost.")) return;
+  if(!confirm("Reset to a single blank level? Unsaved edits will be lost.")) return;
   loadData(JSON.parse(ORIGINAL)); sel={type:null,id:null}; render(); renderInspector();
 };
 
@@ -1314,9 +1431,17 @@ document.getElementById("fileInput").onchange=(e)=>{
   const reader=new FileReader();
   reader.onload=()=>{ try{
       const obj=JSON.parse(reader.result);
-      if(!obj.main||!obj.basement) throw new Error("missing floors");
-      snapshot(); loadData(obj); setProjectName(obj.name); sel={type:null,id:null}; render(); renderInspector();
-    }catch(err){ alert("Couldn't read that file — it doesn't look like a saved plan."); }
+      // loadData migrates (any schema version) + validates, and only replaces
+      // `data` on success — so push the undo entry only after it succeeds.
+      const pre=captureState();
+      loadData(obj);
+      commitCaptured({preState:pre, committed:false});
+      setProjectName(obj.name); sel={type:null,id:null}; render(); renderInspector();
+    }catch(err){
+      alert(err && err.tooNew
+        ? "That plan was saved by a newer version of this editor and can't be opened here."
+        : "Couldn't read that file — it doesn't look like a saved plan.");
+    }
   };
   reader.readAsText(file); e.target.value="";
 };
@@ -1330,6 +1455,7 @@ window.addEventListener("resize", render);
 
 /* ---------- go ---------- */
 fit();
+render();            // fit() skips rendering on a blank plan; this also builds the level tabs
 renderInspector();
 </script>
 </body>
