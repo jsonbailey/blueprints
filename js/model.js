@@ -733,6 +733,9 @@ function cutRoom(f, cutter){
     changed=true;
   }
   f.rooms = f.rooms.filter(r=>!removeIds.has(r.id));
+  // A room fully consumed by the cut no longer exists — orphan (not delete)
+  // any free object that belonged to it, same policy as room deletion below.
+  if(removeIds.size && f.objects) f.objects.forEach(o=>{ if(removeIds.has(o.roomId)) o.roomId=null; });
   f._pt=new Map(f.points.map(p=>[p.id,p]));
   // No remapWallRefs here, deliberately (ARCHITECTURE.md accepted gap): the
   // cut rebuilds loops from scratch. Edges that come out with the same two
@@ -748,7 +751,74 @@ function cutRoom(f, cutter){
 function makeLevel(name, rects){
   const g = buildLevel(rects||[]);
   return indexLevel({id:"lvl"+(_lid++), name, visible:true, points:g.points, walls:g.walls, rooms:g.rooms,
-    wallProps:{}, defaultThickness:DEFAULT_WALL_THICKNESS});
+    wallProps:{}, defaultThickness:DEFAULT_WALL_THICKNESS, objects:[]});
+}
+
+/* ---------- room-relative object placement (ARCHITECTURE.md item 5) ----------
+   FREE-PLACEMENT HALF ONLY: wall-anchored placement, resolveObjects(), and
+   the "Unanchor" action are a separate, later task. `anchor` is always
+   `null` on every object this file creates — the field is just reserved so
+   that later task's data shape is already in place and doesn't need a
+   migration of its own.
+
+   level.objects = [{id, type, roomId, w, d, mirror, x, y, rot, anchor}].
+   x/y/rot are world coordinates/degrees and are authoritative for a free
+   object (an anchored object would instead cache resolveObjects()' output
+   here — not relevant yet). w/d are feet, PER-INSTANCE (the catalog's w/d
+   are only a starting box — addObject below copies them in, but the user
+   can resize afterward). mirror is a plain boolean flip. roomId is which
+   room's reparenting currently has it (null = not inside any room). */
+
+/* Even-odd point-in-polygon test. `pts` = [{x,y}, ...] (a closed loop, first
+   point not repeated at the end). Standard ray-casting; boundary behavior is
+   the usual ray-casting ambiguity, which is fine here — reparenting only
+   cares about a point meaningfully inside one room. */
+function pointInPolygon(pts, x, y){
+  let inside=false;
+  for(let i=0, j=pts.length-1; i<pts.length; j=i++){
+    const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+    const hit = ((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi);
+    if(hit) inside=!inside;
+  }
+  return inside;
+}
+/* Which room (if any) of the level contains world point (x,y) — tested
+   against each room's plain centerline loop, not its interior-offset
+   polygon (a purely topological question: "which room's outline is this
+   point inside", not "is it past the wall face"). First match wins if rooms
+   overlap (pre-cut geometry, or loaded data) — rare, and not worth resolving
+   more cleverly here. Returns null if no room contains the point. */
+function roomContainingPoint(f, x, y){
+  for(const r of f.rooms){
+    const pts = r.loop.map(id=>ptOf(f,id));
+    if(pts.some(p=>!p) || pts.length<3) continue;
+    if(pointInPolygon(pts, x, y)) return r;
+  }
+  return null;
+}
+
+/* Create a free (unanchored) object of catalog `type` centered at world
+   point (x,y). Sizes it from the catalog's starting w/d (per-instance,
+   resizable afterward) and resolves roomId immediately via
+   roomContainingPoint, so a fixture dropped in a room is parented to it from
+   the moment it's placed. Returns the new object, or null if `type` isn't a
+   known fixture type (js/catalog.js FIXTURE_TYPES). Pure mutator — callers
+   wrap this in commit(). */
+function addObject(f, type, x, y){
+  const def = fixtureTypeDef(type); if(!def) return null;
+  if(!f.objects) f.objects=[];
+  const room = roomContainingPoint(f, x, y);
+  const o = {id:"obj"+(_pid++), type, roomId: room?room.id:null,
+    w:def.w, d:def.d, mirror:false, x, y, rot:0, anchor:null};
+  f.objects.push(o);
+  return o;
+}
+/* Remove an object by id. Returns true if it existed. */
+function removeObject(f, id){
+  if(!f.objects) return false;
+  const n=f.objects.length;
+  f.objects = f.objects.filter(o=>o.id!==id);
+  return f.objects.length!==n;
 }
 
 /* Ensure the global id counters are above every numeric id already present,

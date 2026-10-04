@@ -16,10 +16,20 @@ const CURRENT_SCHEMA_VERSION = 2;
    array-shaped per-level data that defaults to `[]` when absent.
    LEVEL_PROP_FIELDS are the non-array fields (`wallProps` is a dict keyed
    by wallKey, `defaultThickness` a number in feet), each with its own
-   explicit normalization in loadData. Future per-level fields (e.g.
-   `objects`) should be added to one of these lists once. */
+   explicit normalization in loadData. Future per-level fields should be
+   added to one of these lists once.
+
+   `objects` (ARCHITECTURE.md item 5, free-placement half) is plain
+   array-shaped per-level data, same as `points`/`walls`/`rooms` — it needs
+   no entry in LEVEL_PROP_FIELDS and no new migration: the generic
+   `Array.isArray(v) ? v.map(...) : []` handling below already defaults a
+   missing `objects` field to `[]`, so a v2 file saved before this feature
+   existed loads with `objects: []` for exactly the same reason a v2 file
+   with no openings loads with none — see loadWallProps' comment on that.
+   No schema bump needed (confirmed by test/objects.test.js's v2-no-objects
+   round trip). */
 const LEVEL_META_FIELDS = ["id","name","visible"];
-const LEVEL_DATA_FIELDS = ["points","walls","rooms"];
+const LEVEL_DATA_FIELDS = ["points","walls","rooms","objects"];
 const LEVEL_PROP_FIELDS = ["wallProps","defaultThickness"];
 const LEVEL_FIELDS = [...LEVEL_META_FIELDS, ...LEVEL_DATA_FIELDS, ...LEVEL_PROP_FIELDS];
 const migrations = [

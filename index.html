@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plan Editor</title>
-<link rel="stylesheet" href="css/app.css?v=3">
+<link rel="stylesheet" href="css/app.css?v=4">
 </head>
 <body>
 
@@ -53,6 +53,19 @@
       <h2>Rooms</h2>
       <div class="btngrid"><button class="btn primary" id="btnAddRoom">+ New room</button></div>
       <p class="muted" style="margin-top:8px">Adds a room to the current level. Drag it by its name to snap it into place. Or draw one: <b>N</b> for a rectangle (click two corners), <b>Shift+N</b> for a freeform outline (click each corner, hold Ctrl/Cmd for a free angle, click the first corner to close). Esc cancels.</p>
+    </div>
+
+    <!-- Fixtures: free-placed furniture/fixtures (ARCHITECTURE.md item 5,
+         free-placement half). Buttons are populated from js/catalog.js's
+         FIXTURE_TYPES by js/app.js, not hand-listed here, so a new catalog
+         entry needs no index.html edit. Each button drops that fixture at
+         the center of the current view and selects it, ready to drag into
+         place — no click-to-place tool mode (that's the room-drawing tools'
+         pattern, for multi-vertex shapes). -->
+    <div class="section">
+      <h2>Fixtures</h2>
+      <div class="btngrid" id="fixtureButtons"></div>
+      <p class="muted" style="margin-top:8px">Adds a fixture at the center of the view. Drag it into place on the plan; dropping it inside a room assigns it to that room. Select it to resize, rotate, mirror, or delete it.</p>
     </div>
 
     <!-- Walls: the ACTIVE level's default wall thickness (renderWallDefaults
@@ -119,13 +132,13 @@
 </div>
 
 <script src="js/vendor/polygon-clipping.min.js"></script>
-<script src="js/model.js?v=3"></script>
-<script src="js/persist.js?v=3"></script>
-<script src="js/state.js?v=3"></script>
-<script src="js/catalog.js?v=3"></script>
-<script src="js/render.js?v=3"></script>
-<script src="js/inspector.js?v=3"></script>
-<script src="js/tools.js?v=3"></script>
-<script src="js/app.js?v=3"></script>
+<script src="js/model.js?v=4"></script>
+<script src="js/persist.js?v=4"></script>
+<script src="js/state.js?v=4"></script>
+<script src="js/catalog.js?v=4"></script>
+<script src="js/render.js?v=4"></script>
+<script src="js/inspector.js?v=4"></script>
+<script src="js/tools.js?v=4"></script>
+<script src="js/app.js?v=4"></script>
 </body>
 </html>

@@ -266,7 +266,12 @@ function drawLevel(f, {shadow}){
   const gOpenings = el("g",{});
   if(!shadow) drawOpenings(f, gOpenings, interiors);
 
-  svg.appendChild(gRooms); svg.appendChild(gWalls); svg.appendChild(gOpenings);
+  // free-placed objects (ARCHITECTURE.md item 5, free-placement half — active
+  // level only; see drawObjects below for why the shadow view skips them)
+  const gObjects = el("g",{});
+  if(!shadow) drawObjects(f, gObjects);
+
+  svg.appendChild(gRooms); svg.appendChild(gWalls); svg.appendChild(gOpenings); svg.appendChild(gObjects);
   svg.appendChild(gDims); svg.appendChild(gLabels); svg.appendChild(gHandles); svg.appendChild(gBadge);
 }
 
@@ -322,6 +327,64 @@ function drawOpenings(f, g, interiors){
       og.appendChild(hit);
       g.appendChild(og);
     });
+  });
+}
+
+/* ---------- free-placed objects (ARCHITECTURE.md item 5, free-placement
+   half — wall-anchored placement is a separate, later task) ----------
+   Not drawn in the shadow view (not required by ARCHITECTURE.md, and keeps
+   the shadow view to the same "pure wall geometry, no detail" treatment
+   corner handles/openings already get there). */
+
+/* Build the object's own local→screen point function from its current
+   x/y/rot/mirror, so js/catalog.js's draw(g,k) never has to think about
+   those: k.P(lx, ld) takes a local offset in feet (lx along the object's
+   width axis, ld along its depth axis, both measured from its center) and
+   returns a screen point. Mirror flips the local width axis BEFORE rotation
+   (so "mirror" always means "flip the object's own left/right", independent
+   of its current turn), then the object rotates by `rot` degrees and
+   translates to (x, y) — world and screen share orientation (uniform
+   positive scale, no flip), so this feeds straight into toScreen() like any
+   other world point. */
+function objectLocalToScreen(o){
+  const rad=(o.rot||0)*Math.PI/180, cos=Math.cos(rad), sin=Math.sin(rad), mir=o.mirror?-1:1;
+  return (lx, ld)=>{
+    const mx=lx*mir;
+    const wx=o.x + mx*cos - ld*sin;
+    const wy=o.y + mx*sin + ld*cos;
+    return toScreen(wx, wy);
+  };
+}
+
+/* Selectable, draggable plan symbol for each free object (js/catalog.js's
+   FIXTURE_TYPES draws the symbol itself; this adds the type-name label and
+   wires selection/drag). A transparent hit polygon covering the object's
+   full w×d box is appended LAST — same trick drawOpenings uses for its hit
+   target — so it sits on top for pointer purposes (clicking anywhere in the
+   box, not just on a drawn line, starts the drag) without visually hiding
+   the symbol painted underneath it. */
+function drawObjects(f, g){
+  (f.objects||[]).forEach(o=>{
+    const def=fixtureTypeDef(o.type); if(!def) return;
+    const isSel = sel.type==="object" && sel.id===o.id;
+    const color = isSel ? "var(--markup)" : "var(--graphite)";
+    const P=objectLocalToScreen(o);
+    const og=el("g",{});
+    def.draw(og, {P, w:o.w, d:o.d, color});
+    const [cx,cy]=toScreen(o.x,o.y);
+    const label=el("text",{x:cx, y:cy+Math.max(14,(o.d*view.scale)/2+11), "text-anchor":"middle",
+      "font-family":"var(--ui)","font-size":10, fill:color,
+      "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3,"pointer-events":"none"});
+    label.textContent = def.label;
+    og.appendChild(label);
+    const corners=[P(-o.w/2,-o.d/2),P(o.w/2,-o.d/2),P(o.w/2,o.d/2),P(-o.w/2,o.d/2)];
+    const hit=el("polygon",{points:corners.map(p=>p.join(",")).join(" "),
+      fill:"transparent", stroke:isSel?"var(--markup)":"none","stroke-width":1.5,"stroke-dasharray":isSel?"4 4":"none"});
+    hit.style.cursor="move";
+    hit.dataset.object=o.id;
+    hit.addEventListener("pointerdown",(e)=>startDragObject(e,o.id));
+    og.appendChild(hit);
+    g.appendChild(og);
   });
 }
 

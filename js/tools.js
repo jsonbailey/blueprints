@@ -23,7 +23,7 @@
    top-level bindings must already exist by then.
    ========================================================================= */
 
-let interaction = null;  // {kind:"point"|"wall"|"room"|"opening"|"pan", ...} or null
+let interaction = null;  // {kind:"point"|"wall"|"room"|"opening"|"object"|"pan", ...} or null
 let snapViz = null;      // transient drag-time snap feedback {targetId?, edge?, gx?, gy?}
 const DRAG_PX = 3;       // movement before a press counts as a drag (vs. a click)
 const SNAP_PX = 12;      // pixel radius for connection/alignment snapping
@@ -62,11 +62,36 @@ function startDragRoom(e,roomId){
   const cluster=connectedRoomPoints(f, roomId);
   const starts=cluster.ids.map(id=>{const p=ptOf(f,id);return {id,x:p.x,y:p.y};});
   if(!starts.length){ setReadout("Locked","every corner of this room is pinned by a locked room"); return; }
+  // Carry along every FREE object (anchor==null — anchored objects follow
+  // their wall via resolveObjects(), a later task, not this translate) whose
+  // roomId is anywhere in the moved cluster, not just the room directly
+  // dragged (ARCHITECTURE.md item 5: "carry a free object along whenever its
+  // roomId is in that cluster's roomIds"). Starting positions are captured
+  // once here, exactly like `starts` above, so repeated move() events apply
+  // a consistent delta from the drag's origin rather than drifting.
+  const objStarts=(f.objects||[])
+    .filter(o=>o.anchor==null && cluster.roomIds.includes(o.roomId))
+    .map(o=>({id:o.id, x:o.x, y:o.y}));
   interaction={kind:"room", roomId, starts, roomIds:cluster.roomIds, pinned:cluster.pinnedIds.length>0,
+    objStarts,
     ref:{x:starts[0].x,y:starts[0].y},
     startClient:{x:e.clientX,y:e.clientY},
     startWorld:eventWorld(e),
     preState:captureState(), committed:false, active:false };
+  svg.setPointerCapture(e.pointerId);
+}
+
+/* Press on a free object's plan symbol (js/render.js drawObjects): select it,
+   and arm a free (unconstrained, grid-snapped) drag. On release, a point-in-
+   polygon test against every room reassigns roomId — see the `object` kind's
+   end() below. */
+function startDragObject(e,id){
+  e.stopPropagation();
+  const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===id); if(!o) return;
+  selectObject(id);
+  interaction={kind:"object", id, startClient:{x:e.clientX,y:e.clientY},
+    startWorld:eventWorld(e), startPt:{x:o.x,y:o.y},
+    preState:captureState(), committed:false, active:false};
   svg.setPointerCapture(e.pointerId);
 }
 
@@ -189,6 +214,9 @@ const interactionHandlers = {
         snapViz={targetId:s.targetId, gx:s.gx, gy:s.gy};
       }
       it.starts.forEach(s=>{ const p=ptOf(f,s.id); p.x=s.x+dx; p.y=s.y+dy; });
+      // Carry along every free object captured in objStarts by this same
+      // (post-snap) delta — see startDragRoom's comment.
+      (it.objStarts||[]).forEach(s=>{ const o=(f.objects||[]).find(x=>x.id===s.id); if(o){ o.x=s.x+dx; o.y=s.y+dy; } });
       render();
       setReadout(snapViz&&(snapViz.targetId||snapViz.gx!=null||snapViz.gy!=null)?"Room → connect":"Room moved",
         `${fmtFt(dx)} · ${fmtFt(dy)}${it.roomIds.length>1?` · ${it.roomIds.length} connected rooms`:""}${it.pinned?" · pinned by locked room":""}`);
@@ -235,6 +263,32 @@ const interactionHandlers = {
     end(it){
       if(it.active && it.committed){
         const list=openingsAt(activeLevel(), it.key); list.sort((a,b)=>a.along-b.along);
+      }
+      if(!it.active) it.preState=null;
+      interaction=null; markDirty();
+    },
+  },
+
+  /* free (unanchored) object drag: grid-snapped move in both axes, no
+     connect-snapping (objects don't weld to corners). On release, a
+     point-in-polygon test against every room reassigns roomId — a plain
+     field update, not a geometry change, so it still goes through the
+     normal commitCaptured()/commit() flow like everything else here. */
+  object: {
+    move(it,e){
+      if(!pastThreshold(it,e)) return;
+      commitCaptured(it);
+      const [wx,wy]=eventWorld(e);
+      const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===it.id); if(!o) return;
+      o.x = applySnap(it.startPt.x + (wx-it.startWorld[0]));
+      o.y = applySnap(it.startPt.y + (wy-it.startWorld[1]));
+      render();
+      setReadout(fixtureLabel(o.type), `${fmtFt(o.x)} · ${fmtFt(o.y)}`);
+    },
+    end(it){
+      if(it.active){
+        const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===it.id);
+        if(o){ const r=roomContainingPoint(f,o.x,o.y); o.roomId = r?r.id:null; }
       }
       if(!it.active) it.preState=null;
       interaction=null; markDirty();
