@@ -595,6 +595,165 @@ function loopSelfIntersects(vs){
   return false;
 }
 
+/* ---------- interior-offset geometry (ARCHITECTURE.md item 3) ----------
+   A room's walls are centerlines; its usable interior is the loop with every
+   edge pushed INWARD by half that edge's effThickness, and each corner moved
+   to where the two adjacent offset lines meet (a mitered interior corner).
+
+   Sign convention (the part that is easy to get silently wrong): for an edge
+   with direction d=(dx,dy), the perpendicular (-dy, dx) points to the
+   interior when the loop's shoelace sum (signedAreaXY) is POSITIVE, and
+   (dy, -dx) when it is negative. This is pure algebra — it holds whichever
+   way the y axis points — and it is decided PER ROOM from that room's own
+   signed area, because not every loop follows the drawing tools' winding
+   (cutRoom output and older/loaded files can run either way).
+   Check: addRoom()'s (0,0),(w,0),(w,h),(0,h) has positive area; its first
+   edge has d=(1,0) → inward (0,1), i.e. toward y=h. Correct.
+
+   Vertex cases (each reported in `kinds[i]`):
+   - "miter":     the two offset lines intersect at a sane point (convex or
+                  reflex vertex alike — plain line-line intersection, no
+                  convexity assumption; unequal thicknesses just mean the
+                  two lines are offset by different amounts).
+   - "collinear": |sin(turn)| < OFFSET_PARALLEL_SIN — the lines are (nearly)
+                  parallel (a pass-through vertex from divideWall / a
+                  T-junction, or a 180° fold-back spike). No unique
+                  intersection, so the vertex is projected perpendicularly
+                  onto EACH offset line. With equal thickness both
+                  projections coincide (one corner); with unequal thickness
+                  they form a small step, which is the true interior outline.
+   - "bevel":     the lines do intersect, but farther than
+                  OFFSET_MITER_LIMIT × (the larger half-thickness) from the
+                  vertex — e.g. a ~0.5° kink between walls of different
+                  thickness, where the exact intersection lands feet away.
+                  Falls back to the same two projections as "collinear".
+                  (A very sharp convex corner, below ~11° for equal walls,
+                  also lands here; its two projections then cross slightly.
+                  Accepted: such corners are not realistic rooms.) */
+const OFFSET_PARALLEL_SIN = 1e-3;     // ≈ 0.057°
+const OFFSET_MITER_LIMIT = 10;        // × max half-thickness at that vertex
+const OFFSET_DEDUPE = 1e-7;           // ft — merge coincident projections
+
+/* Pure: offset a closed polygon. `vs` = [{x,y}] (no zero-length edges — the
+   caller filters those), `halfs[i]` = inward offset (ft) of edge i (vs[i] →
+   vs[i+1]). Returns:
+     sign     +1 / -1 (the loop's own winding), 0 if degenerate
+     normals  inward unit normal per edge
+     corners  per vertex: [pt] (miter) or [onPrevLine, onNextLine]
+     kinds    per vertex: "miter" | "collinear" | "bevel"
+     edges    per edge: {a, b, len}: the interior face's endpoints ON THAT
+              EDGE'S OWN offset line, and its signed length along the edge
+              direction (≤ 0 means the interior face has vanished/inverted)
+     poly     flattened corners, consecutive duplicates removed */
+function offsetPolygon(vs, halfs){
+  const n=vs.length;
+  const out={sign:0, normals:[], corners:[], kinds:[], edges:[], poly:[]};
+  if(n<3) return out;
+  const A=signedAreaXY(vs);
+  if(!(Math.abs(A)>1e-12)) return out;
+  const sign=A>0?1:-1; out.sign=sign;
+  const dirs=[];
+  for(let i=0;i<n;i++){
+    const p=vs[i], q=vs[(i+1)%n];
+    const L=Math.hypot(q.x-p.x,q.y-p.y);
+    const d={x:(q.x-p.x)/L, y:(q.y-p.y)/L};
+    dirs.push(d);
+    out.normals.push(sign>0 ? {x:-d.y, y:d.x} : {x:d.y, y:-d.x});
+  }
+  // a point on edge i's offset line, and the projection of P onto that line
+  const linePt=(i,P)=>({x:P.x+out.normals[i].x*halfs[i], y:P.y+out.normals[i].y*halfs[i]});
+  const startOn=new Array(n), endOn=new Array(n);   // edge i's face endpoints
+  for(let i=0;i<n;i++){
+    const ip=(i-1+n)%n, P=vs[i];
+    const d0=dirs[ip], d1=dirs[i];
+    const Q0=linePt(ip,P), Q1=linePt(i,P);   // = P projected onto each offset line
+    const cr=d0.x*d1.y - d0.y*d1.x;          // sin of the turn angle
+    let kind="collinear", X=null;
+    if(Math.abs(cr)>=OFFSET_PARALLEL_SIN){
+      const s=((Q1.x-Q0.x)*d1.y - (Q1.y-Q0.y)*d1.x)/cr;
+      X={x:Q0.x+s*d0.x, y:Q0.y+s*d0.y};
+      const lim=OFFSET_MITER_LIMIT*Math.max(halfs[ip],halfs[i]);
+      kind = Math.hypot(X.x-P.x,X.y-P.y) <= lim+1e-12 ? "miter" : "bevel";
+    }
+    if(kind==="miter"){
+      out.corners.push([X]); endOn[ip]=X; startOn[i]=X;
+    } else {
+      const same=Math.hypot(Q1.x-Q0.x,Q1.y-Q0.y)<=OFFSET_DEDUPE;
+      out.corners.push(same?[Q0]:[Q0,Q1]); endOn[ip]=Q0; startOn[i]=same?Q0:Q1;
+    }
+    out.kinds.push(kind);
+  }
+  for(let i=0;i<n;i++){
+    const a=startOn[i], b=endOn[i], d=dirs[i];
+    out.edges.push({a, b, len:(b.x-a.x)*d.x+(b.y-a.y)*d.y});
+  }
+  out.corners.forEach(c=>c.forEach(p=>{
+    const last=out.poly[out.poly.length-1];
+    if(!last || Math.hypot(p.x-last.x,p.y-last.y)>OFFSET_DEDUPE) out.poly.push(p);
+  }));
+  if(out.poly.length>1){ const a=out.poly[0], z=out.poly[out.poly.length-1];
+    if(Math.hypot(a.x-z.x,a.y-z.y)<=OFFSET_DEDUPE) out.poly.pop(); }
+  return out;
+}
+
+/* A room's interior-offset geometry, in model terms. Each edge's offset is
+   effThickness/2 of the wall on that edge (effThickness only reads the
+   wall's key, so the {a,b} pair stands in for the wall object). Zero-length
+   edges (two loop points at identical coords, e.g. right after a detach)
+   are dropped before offsetting.
+   Returns {poly, area, sign, kinds, edges} where `edges[i]` corresponds to
+   LOOP edge i (room.loop[i] → room.loop[i+1]) and is null for a dropped
+   zero-length edge; otherwise {a, b, len, n (inward normal), half}. */
+function roomInterior(f, room){
+  const L=room.loop, n=L.length;
+  const res={poly:[], area:0, sign:0, kinds:[], edges:new Array(n).fill(null)};
+  const vs=[], halfs=[], edgeIdx=[];
+  for(let i=0;i<n;i++){
+    const a=ptOf(f,L[i]), b=ptOf(f,L[(i+1)%n]);
+    if(!a || !b || Math.hypot(b.x-a.x,b.y-a.y)<1e-9) continue;
+    vs.push({x:a.x,y:a.y}); halfs.push(effThickness(f,{a:L[i],b:L[(i+1)%n]})/2); edgeIdx.push(i);
+  }
+  const g=offsetPolygon(vs, halfs);
+  if(!g.sign) return res;
+  res.sign=g.sign; res.kinds=g.kinds; res.poly=g.poly;
+  g.edges.forEach((e,k)=>{ res.edges[edgeIdx[k]]={...e, n:g.normals[k], half:halfs[k]}; });
+  // Same-winding offset area. If the walls are thicker than the room is
+  // wide the offset turns inside out: usually the winding flips (clamped to
+  // 0 here), but a symmetric shape (a square) inverts in BOTH directions,
+  // which is a 180° rotation and keeps the winding — so also treat "every
+  // interior edge reversed" as no usable area. A PARTIAL collapse (one short
+  // edge squeezed out between two sharp corners) yields a small bow-tie
+  // whose inverted lobe the shoelace subtracts; that slight under-count is
+  // accepted rather than computing a straight skeleton.
+  const allReversed=g.edges.every(e=>e.len<=0);
+  res.area=allReversed ? 0 : Math.max(0, g.sign*signedAreaXY(g.poly));
+  return res;
+}
+/* Usable floor area (sq ft) inside the walls' interior faces. Centerline
+   area is polyArea(); this is what the UI shows as a room's area. */
+function interiorArea(f, room){ return roomInterior(f, room).area; }
+
+/* Every room whose loop runs along wall w (edge w.a→w.b consecutive, either
+   direction) — not just w.room, which only names the first room deriveWalls
+   met. One entry per such loop edge: {room, edge, side} where `side` is that
+   room's interior face along the wall ({a,b,len,n,half}, or null if the
+   edge was degenerate). `interiors` is an optional Map roomId → roomInterior
+   cache so a render pass computes each room once. */
+function wallSides(f, w, interiors){
+  const out=[];
+  f.rooms.forEach(r=>{
+    const L=r.loop;
+    for(let i=0;i<L.length;i++){
+      const a=L[i], b=L[(i+1)%L.length];
+      if(!((a===w.a&&b===w.b)||(a===w.b&&b===w.a))) continue;
+      let g=interiors && interiors.get(r.id);
+      if(!g){ g=roomInterior(f,r); if(interiors) interiors.set(r.id,g); }
+      out.push({room:r, edge:i, side:g.edges[i]});
+    }
+  });
+  return out;
+}
+
 function centroid(f, loop){
   let x=0,y=0; loop.forEach(id=>{const p=ptOf(f,id); x+=p.x; y+=p.y;}); return {x:x/loop.length, y:y/loop.length};
 }
