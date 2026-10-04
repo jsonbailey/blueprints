@@ -262,8 +262,67 @@ function drawLevel(f, {shadow}){
     });
   }
 
-  svg.appendChild(gRooms); svg.appendChild(gWalls);
+  // wall openings (active level only — the shadow view stays plain walls)
+  const gOpenings = el("g",{});
+  if(!shadow) drawOpenings(f, gOpenings, interiors);
+
+  svg.appendChild(gRooms); svg.appendChild(gWalls); svg.appendChild(gOpenings);
   svg.appendChild(gDims); svg.appendChild(gLabels); svg.appendChild(gHandles); svg.appendChild(gBadge);
+}
+
+/* Wall openings (ARCHITECTURE.md item 4): for each opening, knock a gap out
+   of the wall band between two jamb ticks, then let the catalog entry draw
+   its symbol (js/catalog.js) in a local frame centered on the opening.
+   - Position/width come from displayedOpening(): clamped to the wall's
+     CURRENT length, so a shortened wall never draws an opening past its end,
+     while the stored offset stays untouched (lengthen it back and the
+     opening reappears where it was).
+   - The "across" axis points to the swing side (openingSwingNormal: the
+     reference room's interior-face inward normal from roomInterior, flipped
+     for "out"). World and screen share orientation (uniform positive scale,
+     no flip), so world unit vectors are used directly on screen.
+   - hand: hinge on the right/left of someone standing on the swing side
+     facing the wall. Their right-hand direction is (n.y, -n.x) for swing
+     normal n (y-down: facing up, i.e. n=(0,1), gives (1,0) = screen right).
+   - Open walls: openings are hidden (kept in the data), per item 3.
+   Each glyph gets a transparent hit target that selects it and starts the
+   `opening` drag (js/tools.js). */
+function drawOpenings(f, g, interiors){
+  if(!f.wallProps) return;
+  f.walls.forEach(w=>{
+    const key=wallKeyOf(w), list=openingsAt(f,key);
+    if(!list.length || isOpenWall(f,w)) return;
+    const fr=wallFrame(f,key); if(!fr || fr.len<1e-6) return;
+    const t=Math.max(2.6, effThickness(f,w)*view.scale);   // same band width the wall pass drew
+    const u=fr.dir;
+    list.forEach(o=>{
+      const d=displayedOpening(o, fr.len); if(d.width<=1e-6) return;
+      const def=openingTypeDef(o.type);
+      const isSel = sel.type==="opening" && sel.id===o.id;
+      const n=openingSwingNormal(f, key, o, interiors);
+      const cw=alongToWorld(fr, d.along), C=toScreen(cw.x, cw.y);
+      const P=(s,m)=>[C[0]+u.x*s+n.x*m, C[1]+u.y*s+n.y*m];
+      const wpx=d.width*view.scale;
+      const ru = (n.y*u.x - n.x*u.y) >= 0 ? 1 : -1;            // s-sign of the viewer's right hand
+      const hs = o.hand==="right" ? ru : -ru;
+      const color = isSel ? "var(--markup)" : "var(--graphite)";
+      const og=el("g",{});
+      const gap=[P(-wpx/2,0), P(wpx/2,0)];
+      og.appendChild(el("line",{x1:gap[0][0],y1:gap[0][1],x2:gap[1][0],y2:gap[1][1],
+        stroke:"var(--paper)","stroke-width":t+1,"stroke-linecap":"butt","pointer-events":"none"}));
+      [-1,1].forEach(sg=>{ const a=P(sg*wpx/2,-t/2), b=P(sg*wpx/2,t/2);
+        og.appendChild(el("line",{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:color,"stroke-width":1.5})); });
+      if(def) def.draw(og, {P, w:wpx, t, hs, color, o});
+      const m=Math.max(t/2, 6);
+      const hit=el("polygon",{points:[P(-wpx/2,-m),P(wpx/2,-m),P(wpx/2,m),P(-wpx/2,m)].map(p=>p.join(",")).join(" "),
+        fill:"transparent", stroke:isSel?"var(--markup)":"none","stroke-width":1,"stroke-dasharray":"3 3"});
+      hit.style.cursor = Math.abs(u.x)>=Math.abs(u.y) ? "ew-resize" : "ns-resize";
+      hit.dataset.opening=o.id;
+      hit.addEventListener("pointerdown",(e)=>startDragOpening(e, key, o.id));
+      og.appendChild(hit);
+      g.appendChild(og);
+    });
+  });
 }
 
 /* On-canvas double-click-to-rename for a room's plan label (ARCHITECTURE.md

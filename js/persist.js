@@ -117,7 +117,11 @@ function loadData(raw){
 /* Normalize a persisted wallProps dict: deep-copied (never aliases the
    input), non-object entries dropped, an invalid `thickness` dropped, `open`
    kept only as `true`, and the open-implies-no-thickness invariant enforced.
-   Unknown fields (e.g. item 4's `openings`) pass through untouched. */
+   `openings` (item 4) is normalized by sanitizeOpenings (malformed entries
+   dropped, an empty list removed). No schema bump was needed for openings:
+   v2 already defined wallProps entries as open-ended, a v2 file without
+   openings means exactly what it did before, and they are purely additive.
+   Other unknown fields pass through untouched. */
 function loadWallProps(v){
   const out={};
   if(!v || typeof v!=="object" || Array.isArray(v)) return out;
@@ -127,6 +131,7 @@ function loadWallProps(v){
     const p=JSON.parse(JSON.stringify(e));
     if(p.open!==true) delete p.open;
     if(!isValidThickness(p.thickness) || p.open) delete p.thickness;
+    if("openings" in p){ const ops=sanitizeOpenings(p.openings); if(ops.length) p.openings=ops; else delete p.openings; }
     if(Object.keys(p).length) out[k]=p;
   }
   return out;

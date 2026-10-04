@@ -22,6 +22,10 @@ let cornerRoom = null;               // which room's corner is targeted for angl
 function selectWall(id){ sel={type:"wall",id}; render(); renderInspector(); }
 function selectPoint(id){ sel={type:"point",id}; render(); renderInspector(); }
 function selectRoom(id){ sel={type:"room",id}; render(); renderInspector(); }
+/* Openings live nested in wallProps[wallKey].openings, so their selection
+   carries the wall key too; `id` alone (opening ids are unique) is what
+   generic "is X selected" checks compare. */
+function selectOpening(wallKey, id){ sel={type:"opening",id,wallKey}; render(); renderInspector(); }
 function clearSel(){ sel={type:null,id:null}; render(); renderInspector(); }
 
 function setReadout(label,val){

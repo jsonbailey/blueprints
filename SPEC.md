@@ -27,7 +27,7 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   2x4 + drywall for a new level). `wallProps` is a sparse dict keyed by the
   wall's canonical key (`wallKey(a,b)`: the two point ids sorted and joined
   with `|`; a wall's id is `"w_"+key`) holding per-wall overrides
-  `{thickness?, open?}`. A wall without an explicit `thickness` inherits the
+  `{thickness?, open?, openings?}`. A wall without an explicit `thickness` inherits the
   level default. `open: true` marks an open-concept (no-wall) edge: it has
   zero effective thickness and never also stores a thickness.
   `effThickness(f,w)` is the single source of a wall's thickness. Topology
@@ -36,6 +36,24 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   if all inputs were; detach → both sides), and `deriveWalls` prunes entries
   whose wall no longer exists. Cut doesn't carry props over to edges it
   recreates.
+- **Wall openings**: `wallProps[key].openings = [{id, type, along, width,
+  swing?, hand?, room?}]`. `type` is a `js/catalog.js` entry (door 3',
+  window 3', sliding door 6', garage door 9' defaults). `along` is the
+  distance from the key's lower (sorted) id endpoint to the opening's
+  CENTER, in feet. Doors carry `swing` ("in" = toward the interior of
+  `room`, "out" = away from it) and `hand` (hinge side as seen from the swing
+  side, facing the wall); sliding doors reuse `hand` for the front panel.
+  An opening must lie fully on its wall, at least 2" from any other opening
+  on it; placement/edits move to the nearest position that fits and are
+  refused if none does. Not allowed on open walls (flagging a wall open
+  later hides, doesn't delete, its openings). Re-keying: split → the half
+  holding the opening's center, re-based into that half's frame, trimmed at
+  the split point if it straddled it; merge (weld / corner delete) → every
+  contributor's openings concatenated, re-based into the merged wall's
+  frame (direction flips handled), each to exactly one wall; detach → kept
+  on the side that keeps the original ids when the wall is still shared,
+  else moved (re-based) to the new key. A wall-length edit never changes
+  stored offsets — an overhanging opening is only drawn clamped.
 - Each level is a graph of **corner points** joined by **walls**, where
   walls are *derived* from room loops (a room is an ordered loop of point
   ids; an edge shared by two rooms is a single wall).
@@ -86,6 +104,17 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   still square-capped). Open edges draw as a thin dashed line with a wider
   invisible hit target, and aren't drawn in the shadow view. All of these
   are undoable.
+- Wall openings: the wall inspector lists the wall's openings (click to
+  select, ✕ to delete) and has "+ Door / Window / Sliding door / Garage
+  door" buttons that place one at the wall's center (or the nearest free
+  spot) and select it. The opening inspector edits center offset and width,
+  swing (labeled by room: "Into Kitchen" / "Outward") and hinge side, and
+  can delete it. On the plan each opening knocks a gap in the wall band with
+  jamb ticks and a type symbol (door leaf + swing arc, window frame/glass
+  lines, two offset sliding panels, dashed overhead garage door); drag it to
+  slide it along its wall (grid-snapped, Alt bypasses; stops at the wall ends
+  and 2" from neighbours). All undoable. Openings aren't drawn in the shadow
+  view.
 - Interior geometry: each room has an interior-offset polygon — every edge
   pushed toward that room's interior (decided by the room's own signed
   area, not an assumed winding) by half its wall's effective thickness,
@@ -156,6 +185,8 @@ coordinate/length status readout.
 
 - Angle constraints (90° or typed) are one-shot, not persistent constraints
   — a live solver isn't implemented.
+- Openings are lost on edges that the cut tool recreates, and can't span a
+  T-junction (a split point always lands them on one side).
 - Cut keeps only the largest piece when a cut would split a room or create
   a hole (the single-loop room model can't hold holes/multiple pieces).
 - Point/room-id and level-id counters are synced on every load/build

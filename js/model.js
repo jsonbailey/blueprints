@@ -179,19 +179,232 @@ function liveWallKeys(f){
 }
 /* Copy of a props entry without `openings` (JSON-safe deep copy). */
 function _propsSansOpenings(p){ const c=JSON.parse(JSON.stringify(p)); delete c.openings; return c; }
+function _cloneOpenings(p){ return p && Array.isArray(p.openings) ? JSON.parse(JSON.stringify(p.openings)) : []; }
+/* Write a wall's openings list (sorted by position), or remove the field
+   (and an entry left empty) when the list is empty. */
+function _setOpenings(wp, key, list){
+  if(!list.length){
+    if(wp[key]){ delete wp[key].openings; if(!Object.keys(wp[key]).length) delete wp[key]; }
+    return;
+  }
+  list.sort((a,b)=>a.along-b.along);
+  wp[key]={...(wp[key]||{}), openings:list};
+}
+function _r6(v){ return Math.round(v*1e6)/1e6; }   // trim float noise from re-based offsets
 
-/* Merge the props of several walls collapsing into one key. `list` is in
-   priority order (the first is "the first wall"); undefined = a wall with no
-   entry (defaults: inherits thickness, not open). Rules (ARCHITECTURE.md):
+/* ---------- wall openings (ARCHITECTURE.md item 4) ----------
+   wallProps[key].openings = [{id, type, along, width, swing?, hand?, room?}]
+   (sparse: a wall with none has no `openings` field).
+
+   COORDINATE FRAME — the one thing every function below must agree on:
+   a wall key "lo|hi" is the two endpoint ids sorted as STRINGS (wallKey), and
+   `along` is the distance in feet from point `lo` toward point `hi` to the
+   opening's CENTER (not its leading edge). Centered offsets make clamping
+   and dragging symmetric: the span is [along - width/2, along + width/2].
+   Note `lo` is NOT w.a (deriveWalls' w.a/w.b come from whichever loop met
+   the edge first) — always go through wallFrame(f, key).
+
+   - type:  a catalog type id (js/catalog.js OPENING_TYPES: door, window,
+            sliding, garage).
+   - width: feet.
+   - swing: "in" | "out" (doors). "in" = toward the interior of `room`
+            (a room id); "out" = the opposite side. `room` disambiguates a
+            shared wall (both sides are a room interior) and survives every
+            re-key (room ids never change). See openingSwingNormal().
+   - hand:  "left" | "right" (doors; sliding doors reuse it cosmetically for
+            which panel is in front). Hinge side as seen by someone standing
+            on the side the door swings toward, facing the wall — so it is
+            independent of the lo/hi orientation and never needs flipping
+            when a re-key reverses a wall's canonical direction.
+
+   Placement rules (addOpening/updateOpening, and the drag in js/tools.js):
+   the whole span must lie within [0, wallLength], and two openings on one
+   wall must be at least OPENING_MIN_GAP apart. A request that doesn't fit is
+   moved to the NEAREST position that does (nearestOpeningSlot); if no
+   position fits at all (wall too short, or full), it is REFUSED — creation
+   never silently shrinks an opening's width. Openings can't be placed on an
+   open wall; flagging a wall open later only hides its openings.
+
+   Length edits never touch stored offsets: rendering clamps the DISPLAYED
+   span to the current wall length (displayedOpening), so lengthening the
+   wall again restores the stored position exactly. */
+const OPENING_MIN_GAP = 2/12;      // ft — 2" minimum between openings on one wall
+const OPENING_MIN_WIDTH = 0.5;     // ft
+const OPENING_MAX_WIDTH = 40;      // ft — sanity bound for typed values
+
+function isValidOpeningWidth(w){ return typeof w==="number" && isFinite(w) && w>=OPENING_MIN_WIDTH-1e-9 && w<=OPENING_MAX_WIDTH; }
+function _ptAny(f, id){ return (f._pt && f._pt.get(id)) || (f.points||[]).find(p=>p.id===id) || null; }
+/* A wall key's geometric frame: lo/hi ids and points, length, unit direction
+   lo → hi. Points are looked up in f._pt, falling back to f.points, because
+   topology ops call remapWallRefs before rebuilding the _pt index. */
+function wallFrame(f, key){
+  const [lo,hi]=String(key).split("|");
+  const A=_ptAny(f,lo), B=_ptAny(f,hi); if(!A || !B) return null;
+  const len=Math.hypot(B.x-A.x, B.y-A.y);
+  const dir = len>1e-12 ? {x:(B.x-A.x)/len, y:(B.y-A.y)/len} : {x:1, y:0};
+  return {key, lo, hi, A, B, len, dir};
+}
+function alongToWorld(fr, along){ return {x:fr.A.x+fr.dir.x*along, y:fr.A.y+fr.dir.y*along}; }
+function worldToAlong(fr, P){ return (P.x-fr.A.x)*fr.dir.x + (P.y-fr.A.y)*fr.dir.y; }
+/* Re-base an offset from one wall key's frame into another's by mapping it
+   to the world point it denotes and projecting that onto the target wall.
+   For a target collinear with the source this is exactly
+     same direction:  along' = shift + along
+     reversed:        along' = shift - along   (= shift' + (oldLen - along))
+   where `shift` = the target-frame position of the source's `lo` point — the
+   orientation flip and the positional shift both fall out of the projection
+   (dir·dir' = ±1), so there is no separate "is it reversed?" branch to get
+   backwards. For a non-collinear target (deletePoint on a real corner) it is
+   the perpendicular projection of the opening's center. */
+function rebaseAlong(f, fromKey, along, toKey){
+  if(fromKey===toKey) return along;
+  const a=wallFrame(f,fromKey), b=wallFrame(f,toKey);
+  if(!a || !b) return along;
+  return worldToAlong(b, alongToWorld(a, along));
+}
+
+function openingsAt(f, key){ const p=f.wallProps && f.wallProps[key]; return p && Array.isArray(p.openings) ? p.openings : []; }
+function findOpening(f, key, id){ return openingsAt(f,key).find(o=>o.id===id) || null; }
+
+/* Nearest center position to `desired` at which an opening of `width` fits
+   on a wall of length `len` without overlapping (or coming within
+   OPENING_MIN_GAP of) any opening in `list` other than `ignoreId`. null if
+   no position fits. The feasible set is [width/2, len - width/2] minus one
+   open "blocked" interval per other opening, so the answer is either the
+   clamped desired point or an endpoint of one of those intervals. */
+function nearestOpeningSlot(list, desired, width, len, ignoreId){
+  const eps=1e-9, lo=width/2, hi=len-width/2;
+  if(!(hi>=lo-eps)) return null;
+  const blocks=(list||[]).filter(o=>o.id!==ignoreId)
+    .map(o=>[o.along-o.width/2-OPENING_MIN_GAP-width/2, o.along+o.width/2+OPENING_MIN_GAP+width/2]);
+  const ok=c=>c>=lo-eps && c<=hi+eps && blocks.every(([a,b])=>c<=a+eps || c>=b-eps);
+  const cands=[Math.min(hi,Math.max(lo,desired)), lo, hi];
+  blocks.forEach(([a,b])=>cands.push(a,b));
+  let best=null;
+  for(const c of cands) if(ok(c) && (best==null || Math.abs(c-desired)<Math.abs(best-desired)-eps)) best=c;
+  return best==null ? null : Math.min(hi, Math.max(lo, best));
+}
+
+/* What to DRAW for an opening on a wall that is currently `len` long: the
+   stored span clamped into [0, len] (width first, then center). Never writes
+   back — see "Length edits" above. */
+function displayedOpening(o, len){
+  const width=Math.max(0, Math.min(o.width, len));
+  const along=Math.min(len-width/2, Math.max(width/2, o.along));
+  return {along, width, clamped: Math.abs(width-o.width)>1e-9 || Math.abs(along-o.along)>1e-9};
+}
+
+/* Create an opening on wall w. spec = {type, width?, along?, swing?, hand?,
+   room?}; width defaults to the catalog's defaultWidth, along to the wall's
+   midpoint. Returns the new opening, or null if refused (open wall, unknown
+   type, bad width, or no position on the wall fits — see placement rules). */
+function addOpening(f, w, spec){
+  if(!w || isOpenWall(f,w)) return null;
+  const def=openingTypeDef(spec && spec.type); if(!def) return null;
+  const key=wallKeyOf(w), fr=wallFrame(f,key); if(!fr) return null;
+  const width = spec.width!=null ? spec.width : def.defaultWidth;
+  if(!isValidOpeningWidth(width)) return null;
+  const along=nearestOpeningSlot(openingsAt(f,key), spec.along!=null ? spec.along : fr.len/2, width, fr.len);
+  if(along==null) return null;
+  const o={id:"op"+(_pid++), type:def.type, along:_r6(along), width};
+  if(def.fields.includes("swing")){
+    o.swing = spec.swing==="out" ? "out" : "in";
+    const sides=wallSides(f, {a:fr.lo, b:fr.hi});
+    const room = spec.room && sides.some(s=>s.room.id===spec.room) ? spec.room : (sides.length ? sides[0].room.id : null);
+    if(room) o.room=room;
+  }
+  if(def.fields.includes("hand")) o.hand = spec.hand==="right" ? "right" : "left";
+  if(!f.wallProps) f.wallProps={};
+  _setOpenings(f.wallProps, key, [...openingsAt(f,key), o]);
+  return o;
+}
+
+/* Edit an opening in place. patch may set along, width, swing, hand, room.
+   along/width go through the same placement rules as creation (moved to the
+   nearest fitting position; refused if nothing fits). Returns true if the
+   edit was applied (possibly adjusted), false if refused. Refused on an
+   open wall (its openings are hidden). */
+function updateOpening(f, key, id, patch){
+  const o=findOpening(f,key,id); if(!o) return false;
+  const fr=wallFrame(f,key); if(!fr) return false;
+  if(isOpenWall(f,{a:fr.lo,b:fr.hi})) return false;
+  if(patch.along!=null || patch.width!=null){
+    const width = patch.width!=null ? patch.width : o.width;
+    if(!isValidOpeningWidth(width)) return false;
+    const want = patch.along!=null ? patch.along : o.along;
+    if(typeof want!=="number" || !isFinite(want)) return false;
+    const slot=nearestOpeningSlot(openingsAt(f,key), want, width, fr.len, id);
+    if(slot==null) return false;
+    o.width=width; o.along=_r6(slot);
+  }
+  if(patch.swing==="in" || patch.swing==="out") o.swing=patch.swing;
+  if(patch.hand==="left" || patch.hand==="right") o.hand=patch.hand;
+  if(typeof patch.room==="string") o.room=patch.room;
+  f.wallProps[key].openings.sort((a,b)=>a.along-b.along);
+  return true;
+}
+function removeOpening(f, key, id){
+  const list=openingsAt(f,key); if(!list.some(o=>o.id===id)) return false;
+  _setOpenings(f.wallProps, key, list.filter(o=>o.id!==id));
+  return true;
+}
+
+/* Unit normal (world) pointing to the side a door swings toward. The
+   reference side is `room`'s interior: its interior-face inward normal if it
+   runs along the wall (the robust case — roomInterior decides inward by the
+   room's own winding); else, if that room still exists but no longer touches
+   this wall (e.g. after a detach moved the door to the neighbour's copy of
+   the wall), whichever side of the wall its centroid lies on, so the door
+   keeps swinging the same way physically; else the first adjacent room;
+   else the wall's left-hand normal. "out" negates it. */
+function openingSwingNormal(f, key, o, interiors){
+  const fr=wallFrame(f,key); if(!fr) return {x:0,y:1};
+  const left={x:fr.dir.y, y:-fr.dir.x};
+  const sides=wallSides(f, {a:fr.lo, b:fr.hi}, interiors).filter(s=>s.side);
+  let n=null;
+  const own=o.room && sides.find(s=>s.room.id===o.room);
+  if(own) n=own.side.n;
+  else {
+    const r=o.room && f.rooms.find(r=>r.id===o.room);
+    if(r){ const c=centroid(f,r.loop); const d=(c.x-fr.A.x)*left.x+(c.y-fr.A.y)*left.y;
+      if(Math.abs(d)>1e-9) n = d>0 ? left : {x:-left.x, y:-left.y}; }
+    if(!n && sides.length) n=sides[0].side.n;
+    if(!n) n=left;
+  }
+  return o.swing==="out" ? {x:-n.x, y:-n.y} : {x:n.x, y:n.y};
+}
+
+/* Normalize a persisted openings array (loadWallProps): entries need a
+   string id, a string type, finite along and a positive finite width;
+   optional swing/hand/room are kept only when well-formed. */
+function sanitizeOpenings(v){
+  if(!Array.isArray(v)) return [];
+  const out=[];
+  v.forEach(o=>{
+    if(!o || typeof o!=="object" || typeof o.id!=="string" || !o.id || typeof o.type!=="string") return;
+    if(typeof o.along!=="number" || !isFinite(o.along) || typeof o.width!=="number" || !isFinite(o.width) || o.width<=0) return;
+    const c={id:o.id, type:o.type, along:o.along, width:o.width};
+    if(o.swing==="in" || o.swing==="out") c.swing=o.swing;
+    if(o.hand==="left" || o.hand==="right") c.hand=o.hand;
+    if(typeof o.room==="string") c.room=o.room;
+    out.push(c);
+  });
+  return out;
+}
+
+/* Merge the NON-opening props of several walls collapsing into one key.
+   `list` is in priority order (the first is "the first wall"); undefined = a
+   wall with no entry (defaults: inherits thickness, not open). Rules
+   (ARCHITECTURE.md):
    - thickness: the first contributor that has an explicit override wins;
    - open: only if EVERY contributor was open (then no thickness kept);
    - any other field: first contributor that has it wins.
-   TODO(item 4): openings should be concatenated with the later walls'
-   offsets shifted by the earlier walls' lengths; for now the winning
-   contributor's `openings` (if any) are kept as-is. */
+   `openings` are deliberately NOT handled here: concatenating them needs
+   each contributor's geometry to re-base offsets into the merged wall's
+   frame, which remapWallRefs's merge branch does. */
 function mergeWallProps(list){
   const out={};
-  for(let i=list.length-1;i>=0;i--) if(list[i]) Object.assign(out, JSON.parse(JSON.stringify(list[i])));
+  for(let i=list.length-1;i>=0;i--) if(list[i]) Object.assign(out, _propsSansOpenings(list[i]));
   const tSrc=list.find(p=>p && isValidThickness(p.thickness));
   if(tSrc) out.thickness=tSrc.thickness; else delete out.thickness;
   if(list.length && list.every(p=>p && p.open===true)){ out.open=true; delete out.thickness; }
@@ -201,54 +414,122 @@ function mergeWallProps(list){
 
 /* Re-key wall references (today: wallProps; item 5 adds object anchors) across
    a topology change. Must run AFTER room loops are rewritten but BEFORE the
-   deriveWalls() that ends the op (whose prune removes the now-dead old keys).
+   deriveWalls() that ends the op (whose prune removes the now-dead old keys),
+   and while every old endpoint point still exists in f.points (callers gc
+   points afterwards) — openings are re-based geometrically (rebaseAlong), so
+   both the old and the new endpoints' coordinates are needed.
    This function only ever WRITES new keys; deleting dead ones is left to the
    prune, so a key that is still a live wall (e.g. the neighbour's side of a
    detached shared wall) keeps its props automatically.
 
    op shapes:
    - {kind:"split", a, b, mid}: wall a|b gained point `mid` (divideWall,
-     insertPointOnWall). Both halves get a copy of thickness/open.
-     TODO(item 4): assign each opening to the half containing it, shifting
-     the second half's offsets by the split position, and pick a policy for
-     an opening straddling the split. Until then openings are not carried
-     (none exist yet).
+     insertPointOnWall). Both halves get a copy of thickness/open. Each
+     opening goes to the half containing its CENTER (s = mid's position in
+     the old wall's frame; center < s → the half touching `lo`, else the
+     other — a center exactly on the split goes to the `hi` half), re-based
+     into that half's own lo/hi frame.
+     STRADDLING POLICY (deliberate): an opening whose span crosses the split
+     point is kept on its center's half and TRIMMED at the split point — the
+     part inside the half stays exactly where it was in world space, the part
+     past the new corner is cut off. Since the center is inside the half, at
+     least half the width always survives. Chosen over shifting it whole into
+     the half (which would silently move a door) and over rejecting the split
+     (dividing a wall must never be blocked by a door). Only the split side
+     is trimmed: an end already overhanging from an earlier length edit is
+     left as stored (display-clamped), per the length-edit rule.
    - {kind:"detach", pairs:[[oldKey,newKey],...]}: a wall was duplicated
      onto fresh point ids (detachRoom, detachCorner). The new key gets a
      copy of thickness/open; openings move to the new key only if the old
-     key is no longer a live wall (so they never appear on both sides).
+     key is no longer a live wall (so they never appear on both sides) —
+     i.e. on a still-shared wall the opening stays with the room that kept
+     the original point ids. Moved openings are re-based: fresh ids can sort
+     the other way round ("p10" < "p9"), reversing the frame.
    - {kind:"merge", pairs:[[oldKey,newKey|null],...]}: point ids were
      substituted/removed so several old keys may land on one new key
      (weldPoints, deletePoint). Include an identity pair [k,k] for any wall
      already at a target key, so it counts as a contributor (and as "the
-     first wall"). newKey null = collapsed to zero length → props dropped. */
+     first wall"). newKey null = collapsed to zero length → props (and its
+     openings) dropped. Every contributor's openings are concatenated onto
+     the merged wall, each re-based from its own wall's frame (see
+     rebaseAlong for the direction/shift math). If one old key lands on
+     SEVERAL new keys (deleting a corner on a wall shared by two rooms),
+     each opening goes to the target wall nearest its center, never both. */
 function remapWallRefs(f, op){
   if(!f.wallProps) f.wallProps={};
   const wp=f.wallProps;
   if(op.kind==="split"){
-    const p=wp[wallKey(op.a,op.b)]; if(!p) return;
-    [wallKey(op.a,op.mid), wallKey(op.mid,op.b)].forEach(k=>{ wp[k]=_propsSansOpenings(p); });
+    const K=wallKey(op.a,op.b), p=wp[K]; if(!p) return;
+    const fr=wallFrame(f,K), M=_ptAny(f,op.mid);
+    const kLo=wallKey(fr ? fr.lo : op.a, op.mid), kHi=wallKey(op.mid, fr ? fr.hi : op.b);
+    const base=_propsSansOpenings(p), lists={[kLo]:[], [kHi]:[]};
+    const ops=_cloneOpenings(p);
+    if(ops.length && fr && M){
+      const s=Math.max(0, Math.min(fr.len, worldToAlong(fr, M)));   // split position, old frame
+      ops.forEach(o=>{
+        const first = o.along < s;
+        let s0=o.along-o.width/2, s1=o.along+o.width/2;
+        if(first) s1=Math.min(s1,s); else s0=Math.max(s0,s);         // trim at the split only
+        const trimmed = s1-s0 < o.width-1e-9;
+        const k = first ? kLo : kHi;
+        lists[k].push({...o, along:_r6(rebaseAlong(f, K, trimmed ? (s0+s1)/2 : o.along, k)),
+          width: trimmed ? _r6(s1-s0) : o.width});
+      });
+    }
+    [kLo,kHi].forEach(k=>{
+      if(Object.keys(base).length) wp[k]=JSON.parse(JSON.stringify(base));
+      _setOpenings(wp, k, lists[k]);
+    });
   } else if(op.kind==="detach"){
     const live=liveWallKeys(f), movedOpenings=new Set();
     op.pairs.forEach(([o,n])=>{
       if(!o || !n || o===n || !wp[o]) return;
       const c=_propsSansOpenings(wp[o]);
-      if(wp[o].openings && !live.has(o) && !movedOpenings.has(o)){ c.openings=JSON.parse(JSON.stringify(wp[o].openings)); movedOpenings.add(o); }
-      wp[n]=c;
+      if(Object.keys(c).length) wp[n]=c;
+      if(wp[o].openings && !live.has(o) && !movedOpenings.has(o)){
+        movedOpenings.add(o);
+        _setOpenings(wp, n, _cloneOpenings(wp[o]).map(x=>({...x, along:_r6(rebaseAlong(f, o, x.along, n))})));
+      }
     });
   } else if(op.kind==="merge"){
-    const groups=new Map();
+    const groups=new Map(), targets=new Map();   // newKey → [oldKey], oldKey → Set(newKey)
     op.pairs.forEach(([o,n])=>{
       if(!o || !n) return;
       if(!groups.has(n)) groups.set(n,[]);
       const g=groups.get(n); if(!g.includes(o)) g.push(o);
+      if(!targets.has(o)) targets.set(o,new Set());
+      targets.get(o).add(n);
+    });
+    // snapshot every contributor before any write (a new key may also be an
+    // old key of the same op)
+    const snap={};
+    groups.forEach(olds=>olds.forEach(k=>{ if(!(k in snap)) snap[k]=wp[k] ? JSON.parse(JSON.stringify(wp[k])) : undefined; }));
+    // distribute openings of re-keyed walls onto their target walls
+    const incoming=new Map();
+    targets.forEach((ns,o)=>{
+      // (an identity contributor [n,n] goes through here too, re-basing onto
+      // itself as a no-op, so a merged wall keeps its OWN openings as well;
+      // for an untouched group the result is simply never written below)
+      const list=_cloneOpenings(snap[o]); if(!list.length) return;
+      const cand=[...ns].map(n=>wallFrame(f,n)).filter(Boolean);
+      const src=wallFrame(f,o); if(!src || !cand.length) return;
+      list.forEach(x=>{
+        const C=alongToWorld(src, x.along);
+        let best=cand[0], bd=Infinity;
+        cand.forEach(fr=>{ const t=Math.max(0,Math.min(fr.len,worldToAlong(fr,C))), P=alongToWorld(fr,t);
+          const d=Math.hypot(P.x-C.x,P.y-C.y); if(d<bd-1e-9){ bd=d; best=fr; } });
+        if(!incoming.has(best.key)) incoming.set(best.key,[]);
+        incoming.get(best.key).push({...x, along:_r6(rebaseAlong(f, o, x.along, best.key))});
+      });
     });
     groups.forEach((olds,n)=>{
       if(olds.every(o=>o===n)) return;                        // untouched wall
       const order=olds.includes(n) ? [n, ...olds.filter(o=>o!==n)] : olds;
-      if(!order.some(k=>wp[k])) return;                      // nothing to carry
-      const m=mergeWallProps(order.map(k=>wp[k]));
+      const ins=incoming.get(n)||[];
+      if(!order.some(k=>snap[k]) && !ins.length) return;      // nothing to carry
+      const m=mergeWallProps(order.map(k=>snap[k]));
       if(Object.keys(m).length) wp[n]=m; else delete wp[n];
+      _setOpenings(wp, n, ins);
     });
   } else {
     throw new Error("remapWallRefs: unknown op "+op.kind);
@@ -326,7 +607,7 @@ function detachCorner(f, id){
 function divideWall(f, w){
   const a=w.a, b=w.b; const pa=ptOf(f,a), pb=ptOf(f,b);
   const mid={id:"pt"+(_pid++), x:snapInch((pa.x+pb.x)/2), y:snapInch((pa.y+pb.y)/2)};
-  f.points.push(mid);
+  f.points.push(mid); f._pt.set(mid.id, mid);   // remapWallRefs needs mid's coords
   f.rooms.forEach(r=>{
     const L=r.loop, out=[];
     for(let i=0;i<L.length;i++){
@@ -391,7 +672,7 @@ function connectedRoomPoints(f, startRoomId){
 /* Insert a point at (x,y) on the edge (a,b) for every room using that edge. */
 function insertPointOnWall(f,a,b,x,y){
   const mid={id:"pt"+(_pid++), x:snapInch(x), y:snapInch(y)}; let inserted=false;
-  f.points.push(mid);
+  f.points.push(mid);   // (remapWallRefs finds it via f.points; _pt is rebuilt below)
   f.rooms.forEach(r=>{
     const L=r.loop, out=[];
     for(let i=0;i<L.length;i++){
