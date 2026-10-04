@@ -92,13 +92,35 @@ function drawLevel(f, {shadow}){
       "stroke-dasharray": roomSel ? "4 4" : (locked ? "2 3" : "none")}));
   });
 
+  // Interior-offset geometry per room (active level only): drives the
+  // mitered-corner clip below and the per-side dimension labels.
+  const interiors = new Map();
+  const clipPolyCache = new Map();   // roomId → screen-space path data, or "" if unusable
+  function interiorOf(r){ if(!interiors.has(r.id)) interiors.set(r.id, roomInterior(f,r)); return interiors.get(r.id); }
+  function interiorClipPath(r){
+    if(clipPolyCache.has(r.id)) return clipPolyCache.get(r.id);
+    const g=interiorOf(r);
+    // only a clean, non-inverted interior is safe to cut the bands with
+    const ok = g.poly.length>=3 && g.area>1e-6 && !loopSelfIntersects(g.poly);
+    const d = ok ? "M"+g.poly.map(p=>toScreen(p.x,p.y).join(" ")).join(" L")+" Z" : "";
+    clipPolyCache.set(r.id, d); return d;
+  }
+  const gClipDefs = el("defs",{});
+  if(!shadow) gWalls.appendChild(gClipDefs);
+
   // walls — drawn as a band effThickness() wide (real scale), with a minimum
   // on-screen width so very thin walls stay visible/clickable. Square caps
-  // fill rectilinear corners/T-junctions; mitered interior corners are a
-  // later item-3 task, so non-90° corners just overlap. An open (no-wall)
-  // edge gets a thin dashed line + a wider invisible hit target on the
-  // active level, and isn't drawn at all in the shadow view.
-  f.walls.forEach(w=>{
+  // fill rectilinear corners/T-junctions. On the active level each band is
+  // then clipped (evenodd: whole canvas minus the interior-offset polygons
+  // of every room meeting either of its endpoints), so whatever a square
+  // cap pokes past a room's interior face at a non-90° corner is cut away
+  // and the interior corner reads as a clean miter. Only rooms touching the
+  // wall's endpoints are used, so a wall of an unrelated room that merely
+  // overlaps another room (pre-cut) is never hidden. (Exterior corners are
+  // still square-capped: an acute exterior corner can show a small notch.)
+  // An open (no-wall) edge gets a thin dashed line + a wider invisible hit
+  // target on the active level, and isn't drawn at all in the shadow view.
+  f.walls.forEach((w,wi)=>{
     const a=ptOf(f,w.a), b=ptOf(f,w.b);
     const [ax,ay]=toScreen(a.x,a.y),[bx,by]=toScreen(b.x,b.y);
     const isSel = !shadow && sel.type==="wall" && sel.id===w.id;
@@ -121,6 +143,21 @@ function drawLevel(f, {shadow}){
         // shadow keeps its dotted look at any width: dots one band wide
         "stroke-dasharray": shadow ? `${Math.max(1,sw*0.2)} ${Math.max(5,sw*1.8)}` : "none",
         opacity: shadow ? 0.55 : 1});
+      // Only when the band is at real scale: if the minimum on-screen width
+      // kicked in (zoomed out / thin wall) the overlap is a pixel or two, and
+      // clipping to the true faces would undo that minimum.
+      if(!shadow && sw <= effThickness(f,w)*view.scale + 0.01){
+        const rs = new Set([...roomsAt(f,w.a), ...roomsAt(f,w.b)]);
+        const holes = [...rs].map(interiorClipPath).filter(Boolean);
+        if(holes.length){
+          const id = `wclip-${wi}`, BIG = 1e6;   // only the active level clips → unique
+          const cp = el("clipPath",{id, clipPathUnits:"userSpaceOnUse"});
+          cp.appendChild(el("path",{"clip-rule":"evenodd",
+            d:`M${-BIG} ${-BIG} H${BIG} V${BIG} H${-BIG} Z `+holes.join(" ")}));
+          gClipDefs.appendChild(cp);
+          line.setAttribute("clip-path",`url(#${id})`);
+        }
+      }
     }
     if(!shadow){
       const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
@@ -130,29 +167,30 @@ function drawLevel(f, {shadow}){
     }
     gWalls.appendChild(line);
 
-    // dimension label (active level only), pulled INSIDE the room so it never
-    // sits on the shared line / overlaps the neighbouring room
+    // dimension labels (active level only): one per room that runs along
+    // this wall (an exterior wall has 1, a shared wall 2), each showing THAT
+    // room's interior clear length — the distance between its own interior
+    // corners on this edge — and sitting inside that room, just clear of
+    // the drawn band, so neighbours' labels never collide on the shared line.
     if(!shadow && opts.dims){
-      const len = Math.hypot(b.x-a.x,b.y-a.y);
-      if(len>0.4){
-        const mx=(ax+bx)/2, my=(ay+by)/2;
-        const ang = Math.atan2(by-ay,bx-ax)*180/Math.PI;
-        const flip = (ang>90||ang<-90);
-        let lx=mx, ly=my-6;
-        const rr = w.room!=null ? f.rooms.find(r=>r.id===w.room) : null;
-        if(rr){
-          const c=centroid(f,rr.loop); const [csx,csy]=toScreen(c.x,c.y);
-          let vx=csx-mx, vy=csy-my; const vl=Math.hypot(vx,vy)||1; vx/=vl; vy/=vl;
-          const off=11+sw/2;   // clear the drawn band, not just the centerline
-          lx=mx+vx*off; ly=my+vy*off;
-        }
+      const ang = Math.atan2(by-ay,bx-ax)*180/Math.PI;
+      const flip = (ang>90||ang<-90);
+      wallSides(f, w, interiors).forEach(({side})=>{
+        if(!side || side.len<=0.4) return;
+        const mid = {x:(side.a.x+side.b.x)/2, y:(side.a.y+side.b.y)/2};   // on the interior face
+        const [fx,fy] = toScreen(mid.x,mid.y);
+        // screen and world share orientation (uniform positive scale), so the
+        // world inward normal is the screen one; push from the face out to
+        // 11px past the drawn band's edge (band can be wider than real scale)
+        const off = 11 + Math.max(0, sw/2 - side.half*view.scale);
+        const lx = fx+side.n.x*off, ly = fy+side.n.y*off;
         const t = el("text",{x:lx,y:ly, fill: isSel?"var(--markup)":"var(--graphite-soft)",
           "font-family":"var(--mono)","font-size":11,"text-anchor":"middle","dominant-baseline":"central",
           transform:`rotate(${flip?ang+180:ang} ${lx} ${ly})`,
           "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3});
-        t.textContent = fmtFt(len);
+        t.textContent = fmtFt(side.len);
         gDims.appendChild(t);
-      }
+      });
     }
 
     // end badges on the selected wall: which corner is ① / ② and which moves
@@ -183,7 +221,7 @@ function drawLevel(f, {shadow}){
       }
       gLabels.appendChild(name);
       if(!shadow){
-        const area = polyArea(f,r.loop);
+        const area = interiorArea(f,r);   // inside the walls' interior faces, not centerline
         const sub = el("text",{x:cx,y:cy+13,"text-anchor":"middle",
           "font-family":"var(--mono)","font-size":10,fill:"var(--graphite-soft)",
           "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3});

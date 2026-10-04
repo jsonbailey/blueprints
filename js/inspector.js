@@ -225,7 +225,7 @@ function startRenameRoom(room, nameEl, opts){
 
 function renderRoomInspector(f, body){
   const r=f.rooms.find(x=>x.id===sel.id); if(!r){clearSel();return;}
-  const area=polyArea(f,r.loop);
+  const area=interiorArea(f,r);   // inside the walls' interior faces
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   r.loop.forEach(id=>{const p=ptOf(f,id);minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);});
   body.innerHTML = `
@@ -233,7 +233,7 @@ function renderRoomInspector(f, body){
     <span class="field-label">Room name</span>
     <div class="room-name-display" id="roomName" title="Double-click to rename">${esc(r.name)}</div>
     <div style="height:10px"></div>
-    <span class="field-label">Floor area</span>
+    <span class="field-label">Floor area (inside walls)</span>
     <div class="bigval">${Math.round(area)} sf</div>
     <span class="field-label">Bounding size (W · H)</span>
     <div class="bigval" style="font-size:16px">${fmtFt(maxX-minX)} · ${fmtFt(maxY-minY)}</div>

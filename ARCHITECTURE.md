@@ -13,6 +13,7 @@ behavior belongs in SPEC.md).
    presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus
    an `open` flag for open-concept (no-wall) edges and the generalized
    `remapWallRefs` re-keying infrastructure that items 4 and 5 both need.
+   *Shipped* — its section below stays as the reference items 4-5 build on.
 4. **Wall openings** — doors/windows/sliding doors/garage doors, built on
    item 3's `wallProps`/`remapWallRefs` infrastructure.
 5. **Room-relative object placement** — furniture/fixture catalog, with
@@ -48,15 +49,19 @@ messages.)
 
 ## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 
-**Status:** the data model and infrastructure half has shipped (see
-SPEC.md): `wallKey`, `wallProps`, `effThickness`, the `open` flag,
-`remapWallRefs` threaded through divideWall / insertPointOnWall / weldPoints
-/ deletePoint / detachRoom / detachCorner, orphan pruning in `deriveWalls`,
-schema v2, the inspector and level-default UI, and band rendering at real
-thickness. **Still to do:** the "Interior dimensions/area" bullet below
-(interior offsets, per-side dimension labels, interior-polygon area, mitered
-corners). Item 4 must also fill in the `openings` TODOs in
-`remapWallRefs`/`mergeWallProps` (split-by-position, concatenating on merge).
+**Status:** shipped (see SPEC.md): `wallKey`, `wallProps`, `effThickness`,
+the `open` flag, `remapWallRefs` threaded through divideWall /
+insertPointOnWall / weldPoints / deletePoint / detachRoom / detachCorner,
+orphan pruning in `deriveWalls`, schema v2, the inspector and level-default
+UI, band rendering at real thickness, and the interior geometry
+(`offsetPolygon` / `roomInterior` / `interiorArea` / `wallSides` in
+`js/model.js`: interior-offset polygons, per-side dimension labels,
+interior area, miter-clipped bands). What remains here is reference for
+items 4-5: item 4 must fill in the `openings` TODOs in
+`remapWallRefs`/`mergeWallProps` (split-by-position, concatenating on
+merge), and item 5's anchors measure from the interior face that
+`roomInterior(f, room).edges[i]` already exposes (`a`, `b`, inward `n`,
+`half`).
 
 `level.wallProps`, keyed by a **canonicalized endpoint-id pair** (sort the
 two point ids so the key doesn't depend on which room's loop created the
@@ -82,13 +87,6 @@ item 4; `object.anchor` in item 5 references this same wall-key identity).
   wall (disallow in the inspector); if an edge with existing openings is
   later flagged open, hide (don't delete) those openings. On merge, the
   result is open only if both merged walls were.
-- **Interior dimensions/area:** offset each wall's centerline inward by half
-  its `effThickness`, direction determined by that room's winding order
-  (signed area) — a shared wall has a different interior face per side, so
-  dimension labels must be per-side, not a single `w.room` assumption.
-  Intersect adjacent offset lines for interior corners. Handle
-  collinear-neighbor and T-junction cases explicitly — parallel offset lines
-  don't intersect.
 - **`remapWallRefs(level, op)`** — one generalized re-keying function
   covering both `wallProps` openings and item 5's `object.anchor`
   references, since both are "a reference to a wall key plus an along-wall
