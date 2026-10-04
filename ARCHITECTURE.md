@@ -1,134 +1,76 @@
 # Architecture & roadmap
 
-Living design doc for planned work on the plan editor. SPEC.md describes
-what's shipped; this describes what's next and the decisions behind it, so
-every implementation step builds on the same assumptions instead of each
-subagent re-deriving them. Update this file as decisions change — don't let
-it go stale.
+Design doc for planned work on the plan editor. SPEC.md describes what's
+shipped; this describes what's next and the reasoning behind it, so every
+implementation step builds on the same assumptions instead of each subagent
+re-deriving them. Describes the target design, not how it was decided —
+keep entries prescriptive, and delete a roadmap item once it ships (shipped
+behavior belongs in SPEC.md).
 
-## Roadmap (in order)
+## Roadmap
 
-0. **File split** — single `index.html` into separate CSS/JS files (classic
-   `<script src>`, no ES modules, no build step — modules break the
-   double-click/`file://` use case; see SPEC.md's offline goal).
-0.5. **Cleanup commit** (see below) — land before new features build on top.
-1. **Level selector UI** *(done)* — panel replacing the tab row: click to
-   switch, an eye toggle per level (shadow visibility), an add button, and
-   double-click-to-rename as true in-place editing (no `prompt()` dialog).
-   Shipped as a dropdown (`#levelPanelBtn` / `#levelPanel` in `index.html`,
-   `renderLevelPanel()` in `js/app.js`) rather than an always-expanded row,
-   so the titleblock stays compact with 6+ levels (the panel scrolls
-   instead). Visibility toggles go through `commit()` (undoable, persisted
-   per `LEVEL_META_FIELDS`); switching the active level stays `markDirty()`
-   only (view-state, not persisted plan data), unchanged from the old tab
-   row.
 2. **Room-drawing hotkeys** — `N` (rectangle) / `Shift+N` (freeform) tools.
-2.5. **New: unify room naming with the double-click-in-place pattern** —
-   see detailed section below. Queued right after item 2 (not concurrent
-   with it) because item 2's "focus the room name field on creation"
-   requirement touches the exact same `renderRoomInspector` code this item
-   replaces.
+2.5. **Unify room naming with the double-click-in-place pattern** — see
+   detailed section below.
 3. **Wall thickness** — per-level default + per-wall override, standard
    presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus
    an `open` flag for open-concept (no-wall) edges and the generalized
-   `remapWallRefs` re-keying infrastructure that item 4 and item 5 both need.
-4. **Wall openings** — doors/windows/sliding doors, built on item 3's
-   `wallProps`/`remapWallRefs` infrastructure.
+   `remapWallRefs` re-keying infrastructure that items 4 and 5 both need.
+4. **Wall openings** — doors/windows/sliding doors/garage doors, built on
+   item 3's `wallProps`/`remapWallRefs` infrastructure.
 5. **Room-relative object placement** — furniture/fixture catalog, with
    optional wall-anchored placement (distance + position derived from a
-   host wall's interior face). Sequenced **after** items 3-4, not before —
-   see "Item 5" below for why.
+   host wall's interior face). Depends on items 3-4 — see "Item 5" below.
 6. **Local storage autosave** — debounced, reuses `schemaVersion`/`migrateData`.
 7. **Hamburger menu + multi-project switcher** — backed by item 6.
 
-(Numbering above reflects final build order. Items 3-5 were reordered from
-an earlier draft of this roadmap after a second architecture review found
-object placement and wall openings both need infrastructure that wall
-thickness introduces — see each item's section for the reasoning.)
+(Numbering starts at 2 because earlier items have shipped and moved to
+SPEC.md. Keep remaining numbers stable as items complete — don't renumber —
+since they're cross-referenced throughout this document and in commit
+messages.)
 
-## File layout (post-split, with planned additions)
+## File layout
 
 | File | Contents |
 |---|---|
 | `index.html` | Markup only + `<link>`/`<script src>` tags |
 | `css/app.css` | Styles |
 | `js/vendor/polygon-clipping.min.js` | Vendored lib, untouched |
-| `js/model.js` | Pure geometry/topology: `buildLevel`, `deriveWalls`, `indexLevel`, `makeLevel`, `cutRoom`, `syncIds`, `polyArea`, `centroid`, `fmtFt`/`parseLen`, snapping-computation helpers. Also where `wallProps` re-keying lives (item 4), next to the topology ops it hooks into. |
+| `js/model.js` | Pure geometry/topology: `buildLevel`, `deriveWalls`, `indexLevel`, `makeLevel`, `cutRoom`, `syncIds`, `polyArea`, `centroid`, `fmtFt`/`parseLen`, snapping-computation helpers. `wallProps` re-keying (item 3) lives here too, next to the topology ops it hooks into. |
 | `js/persist.js` | `CURRENT_SCHEMA_VERSION`, `migrations`, `migrateData`, `stripIdx`, `loadData`, `freshData` |
-| `js/state.js` | `data`, `sel`, `opts`, `view`, `history`, `snapshot`/`captureState`/`commitCaptured`/`undo`, `activeLevel`/`otherLevels` |
+| `js/state.js` | `data`, `sel`, `opts`, `view`, `history`, `snapshot`/`captureState`/`commitCaptured`/`undo`, `commit`/`markDirty`, `activeLevel`/`otherLevels` |
 | `js/render.js` | `render`, `drawGrid`, `drawLevel`, coordinate transforms, `el(...)` |
 | `js/inspector.js` | `renderInspector` as a lookup table keyed by selection type |
-| `js/app.js` | Pointer/key event dispatch (routes to `js/tools.js` handlers), DOM wiring, startup |
-| `js/tools.js` *(new, item 2)* | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, replacing the `drag`/`wallDrag`/`roomDrag`/`pan` globals. Holds the rectangle and freeform room-drawing tools. Build this refactor as the **first commit of item 2** — items 2/3/5 add 8+ interaction modes, too many for ad-hoc if-chains. |
-| `js/catalog.js` *(new, item 4, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for wall openings (item 4) and room fixtures (item 5). Load before `render.js`/`inspector.js`. |
-| `js/geometry.js` *(new, optional, item 4)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
-| `js/storage.js` *(new, item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
-| `js/nav.js` *(new, item 7)* | Hamburger menu / project switcher. |
+| `js/app.js` | Pointer/key event dispatch, DOM wiring, startup |
+| `js/tools.js` *(item 2)* | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, replacing ad-hoc per-gesture globals. Holds the rectangle and freeform room-drawing tools. |
+| `js/catalog.js` *(item 4, extended item 5)* | Extensible array of placeable types: `{type, label, w, d, draw(g,w,d)}` for wall openings (item 4) and room fixtures (item 5). Load before `render.js`/`inspector.js`. |
+| `js/geometry.js` *(optional, item 3)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
+| `js/storage.js` *(item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
+| `js/nav.js` *(item 7)* | Hamburger menu / project switcher. |
 
-## Cleanup commit (0.5) — required before item 2 starts
+## Bug: connected rooms must move together
 
-1. `esc()` helper — fixes an existing unescaped-`innerHTML` bug (room rename).
-2. `commit()`/`markDirty()` helper centralizing the ~25 scattered
-   `snapshot(); mutate; render()` call sites — needed before autosave (item 6)
-   can hook a single place.
-3. `loadData` refactored to a pure deserializer (returns new state rather than
-   mutating the global `data`).
-4. `renderInspector` split into a lookup table keyed by selection type — item
-   4/5 add `object` and `opening` selection types, which should just be two
-   more table entries, not more branches in one function.
-5. **Serialization field list must be shared, not duplicated.** `stripIdx`
-   and `loadData` each hardcode the same field list
-   (`{id,name,visible,points,walls,rooms}`) independently. Any new per-level
-   field (`objects`, `wallProps`, `defaultThickness`) will silently vanish
-   from save/undo/autosave unless both lists are updated. Fix: one shared
-   field list, or serialize everything not prefixed `_`.
-6. **`syncIds` must scan every id-bearing collection generically**, not just
-   points and rooms — object ids and opening ids need the same
-   collision-avoidance treatment (this is the same bug class SPEC.md
-   documents as already fixed once for points; don't reintroduce it for new
-   id types).
-7. **Keyboard handler needs an `isTypingTarget(e)` guard** (input/select/
-   contenteditable) before any global shortcut fires — today Ctrl/Cmd+Z
-   inside an inspector field triggers plan-undo instead of text-undo; adding
-   `N`/`Shift+N` makes this worse (typing "N" in a room-name field would
-   trigger the drawing tool). Use `e.code === "KeyN"` for reliable detection
-   regardless of Shift. Esc priority: cancel an active tool first, then clear
-   selection.
-
-## Bug fix bundled with item 2 — connected rooms must move together
-
-**Confirmed bug in existing (shipped) behavior**, queued here rather than
-fixed immediately because the fix touches the exact whole-room-drag code in
-`js/app.js` that both the in-flight cleanup commit (0.5) and item 2's
-interaction-dispatch rewrite are already restructuring — fixing it
-separately right now risks a throwaway merge conflict.
-
-**Root cause:** dragging a room by its name (whole-room translate) and
-nudging a room (arrow keys) both currently move only that room's own
-`room.loop` points. When two rooms are welded along a shared wall, the
-shared corners belong to *both* rooms' loops — so translating one room's
-loop drags the shared corners away from the neighboring room's other
-(unshared) corners, stretching/distorting the neighbor instead of leaving
-its shape intact.
+Dragging a room by its name (whole-room translate) and nudging a room
+(arrow keys) must move every room transitively welded to it, not just the
+dragged room's own `room.loop` points. When two rooms share a wall, the
+shared corners belong to both rooms' loops — so translating only one room's
+loop stretches the neighbor instead of carrying it along.
 
 **Fix:** before translating, compute the full connected component of rooms
 transitively sharing welded points with the dragged room (flood-fill /
 union-find over shared point ids across all rooms in the level — not just
-direct neighbors, since a chain of 3+ welded rooms should all move together).
-Translate every point in that unioned set by the same `{dx,dy}` delta,
-instead of just the dragged room's own loop. Apply this to both the
-whole-room drag gesture and `nudgeRoom`. **Respect locked rooms**: per the
-existing "Lock geometry" feature, a locked room's points can't be moved —
-stop the flood-fill from propagating through a point that belongs to a
-locked room (the dragged room's cluster should stop at a locked neighbor's
-shared wall, not drag it along or silently skip it).
+direct neighbors, since a chain of 3+ welded rooms should all move
+together). Translate every point in that unioned set by the same `{dx,dy}`
+delta. Apply to both the whole-room drag gesture and `nudgeRoom`. **Respect
+locked rooms**: stop the flood-fill from propagating through a point that
+belongs to a locked room — a locked room's points never move, and the
+dragged cluster stops at a locked neighbor's shared wall rather than
+dragging it along or silently detaching.
 
-**Cross-reference for item 5 (object placement):** once this lands, a
-whole-room drag can move *multiple* rooms in one gesture. Item 5's "free
-objects carry along by the room's `{dx,dy}` on `roomDrag`/`nudgeRoom`" rule
-must apply per-room across the entire moved cluster, not just the directly-
-dragged room — otherwise furniture in a connected neighbor room would be
-left behind while its room's walls move out from under it.
+**Cross-reference for item 5:** once this is fixed, a whole-room drag can
+move multiple rooms in one gesture. Item 5's "free objects carry along by
+the room's `{dx,dy}` on `roomDrag`/`nudgeRoom`" rule must apply per-room
+across the entire moved cluster, not just the directly-dragged room.
 
 ## Item 2 — room-drawing hotkeys
 
@@ -143,15 +85,13 @@ left behind while its room's walls move out from under it.
   shortcut to finish an open polyline. Esc cancels.
 - **On completing a room (either tool), immediately put the room-name field
   into edit mode, focused and ready to type** — no extra click to select it
-  first. Apply the same fix to the existing "+ New room" button at the same
-  time (same underlying selection/inspector-render path, currently just
-  missing the focus step) — don't ship two different behaviors for
-  "a room was just created" depending on which entry point made it.
+  first. The existing "+ New room" button gets the same fix — "a room was
+  just created" must behave identically regardless of entry point.
 - Implementation notes:
   - Ctrl+click triggers the native context menu on some platforms —
-    `preventDefault` on `contextmenu` while a draw tool is active, and
-    confirm cross-browser/Mac behavior before assuming Ctrl is the final
-    modifier (Meta may be needed as a Mac alternative).
+    `preventDefault` on `contextmenu` while a draw tool is active. Confirm
+    cross-browser/Mac behavior before assuming Ctrl is the final modifier
+    (Meta may be needed as a Mac alternative).
   - Walls/corners/room-labels have their own `pointerdown` handlers that
     `stopPropagation()` — while a draw tool is active, route all pointer
     events through the tool dispatcher first (e.g. disable `pointer-events`
@@ -163,54 +103,37 @@ left behind while its room's walls move out from under it.
     they join/weld onto existing corners like any other point.
   - Validate freeform shapes: reject fewer than 3 vertices or
     self-intersecting edges.
-  - New loops should use a consistent winding order. Item 4's interior-offset
-    code must use signed area regardless, since older data and `cutRoom`
-    output aren't guaranteed to follow it.
+  - New loops use a consistent winding order. Item 3's interior-offset code
+    must use signed area regardless, since older data and `cutRoom` output
+    aren't guaranteed to follow it.
 
 ## Item 2.5 — unify room naming with the double-click-in-place pattern
 
-The app now has three different "rename" interactions: the project name
-(single-click contenteditable, no competing click action there), the level
-name (double-click contenteditable, since single-click already means
-"switch to this level" — see item 1), and the room name (a persistent
-`<input id="roomName">` living in the Inspector panel, via
-`renderRoomInspector` in `js/inspector.js`). Collapse the room name into the
-same double-click-to-edit pattern as the level name, in **both** places it
-appears:
+Room naming should match the double-click-in-place pattern the project name
+and level name already use, in both places the room name appears:
 
 - **On the plan canvas**: the room name is rendered as SVG `<text>` (in
   `drawLevel`'s label group, `js/render.js`) — not an HTML element, so
-  `contenteditable` doesn't apply directly to it (SVG text elements don't
-  support it). Double-clicking the on-canvas name needs a small HTML overlay
-  (a plain `<input>` or a `contenteditable` `div`) positioned absolutely at
-  the label's current screen coordinates (via the same `toScreen()`
-  transform `drawLevel` already uses to place the SVG text) when editing
-  starts, removed when editing ends. This needs to track pan/zoom while
-  active (or simplest: just don't allow panning/zooming while the overlay is
-  open, closing it on blur/Enter/Escape same as the level-rename pattern).
+  `contenteditable` doesn't apply directly to it. Double-clicking the
+  on-canvas name needs a small HTML overlay (a plain `<input>` or a
+  `contenteditable` `div`) positioned absolutely at the label's current
+  screen coordinates (via the same `toScreen()` transform `drawLevel`
+  already uses) when editing starts, removed when editing ends. Either
+  track pan/zoom while the overlay is open, or simplest: disable
+  pan/zoom while it's open, closing it on blur/Enter/Escape same as the
+  level-rename pattern.
 - **In the Inspector panel**: replace the `<input id="roomName">` with a
   plain text span showing the name, double-click to enter the same in-place
-  edit mode (follow `startRenameLevel`'s exact control-flow pattern in
+  edit mode (follow `startRenameLevel`'s control-flow pattern in
   `js/app.js`: Enter commits and blurs, Escape cancels and reverts, blur
-  commits — not a live-every-keystroke update like the current input's
-  `oninput` handler).
-- **Bonus fix that falls out of this naturally**: the current room-rename
-  `oninput`/`onchange` handlers mutate `r.name` directly with **no
-  `commit()`/snapshot at all** — room renames aren't currently undoable.
-  Following the level-rename pattern (which commits once, on blur/Enter,
-  via `commit(()=>{ l.name=text; })`) fixes this as a side effect. Don't
-  lose this when implementing — it's a real gap being closed, not scope
-  creep.
-- **Supersedes item 2's "focus the room name field on creation" mechanism**:
-  item 2 implements this as `#roomName` input's `.focus(); .select();` (the
-  only mechanism available at the time, matching the wall-length input's
-  existing precedent). Once this item lands, "immediately ready to type"
-  instead means programmatically entering the new in-place-edit mode on the
-  name display (same as how a user-initiated double-click would) rather than
-  focusing a plain input — update the post-creation behavior in both
-  `addRoom()` (`js/app.js`) and the `N`/`Shift+N` tools' room-completion path
-  to match, so both still land on "ready to type a name" immediately, just
-  via the new mechanism.
+  commits — not a live-every-keystroke update).
+- **Room renames must go through `commit()`** (undoable, matching every
+  other mutation) — not a direct mutation with no snapshot.
+- **Supersedes item 2's room-creation-focus mechanism**: item 2 focuses
+  `#roomName` as a plain input. Once this item lands, "immediately ready to
+  type" instead means entering the new in-place-edit mode on the name
+  display — update the post-creation behavior in both `addRoom()`
+  (`js/app.js`) and the `N`/`Shift+N` tools' room-completion path to match.
 
 ## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 
@@ -223,12 +146,12 @@ item 4; `object.anchor` in item 5 references this same wall-key identity).
 - **Unset thickness means "use the level default"** — don't eagerly copy the
   default into every wall's props, or changing the level default later won't
   propagate to walls that never got an explicit override.
-- **`open` flag for open-concept (no-wall) edges** — a wall can be flagged
-  `wallProps[key].open = true` instead of getting a full-length opening
-  entry. Reasoning (from the second architecture review): a full-length
-  "open passage" opening breaks the split/length-change rules below (every
-  split point falls inside it; a length change leaves a stub or needs
-  clamping), while a flag has no length and both problems vanish. Define
+- **`open` flag for open-concept (no-wall) edges** — a wall is flagged
+  `wallProps[key].open = true` rather than getting a full-length opening
+  entry, because a full-length opening would need special-case handling
+  everywhere a wall's length or split point is touched (every split point
+  would fall inside it; a length change would leave a stub), while a flag
+  has no length and both problems vanish. Define
   `effThickness(w) = open ? 0 : (thickness ?? level.defaultThickness)` and
   use it everywhere thickness is consulted — an effective thickness of 0
   means the interior-offset code needs no special case (offset is to the
@@ -239,24 +162,23 @@ item 4; `object.anchor` in item 5 references this same wall-key identity).
   later flagged open, hide (don't delete) those openings. On merge, the
   result is open only if both merged walls were.
 - **Interior dimensions/area:** offset each wall's centerline inward by half
-  its `effThickness`, direction determined by **that room's winding order**
+  its `effThickness`, direction determined by that room's winding order
   (signed area) — a shared wall has a different interior face per side, so
-  the current single `dimension label → w.room` assumption needs to become
-  per-side. Intersect adjacent offset lines for interior corners. Handle
+  dimension labels must be per-side, not a single `w.room` assumption.
+  Intersect adjacent offset lines for interior corners. Handle
   collinear-neighbor and T-junction cases explicitly — parallel offset lines
   don't intersect.
 - **`remapWallRefs(level, op)`** — one generalized re-keying function
-  covering *both* `wallProps` openings and item 5's `object.anchor`
-  references, since both are just "a reference to a wall key plus an
-  along-wall offset" and both need identical handling on every
-  topology-changing operation:
+  covering both `wallProps` openings and item 5's `object.anchor`
+  references, since both are "a reference to a wall key plus an along-wall
+  offset" and both need identical handling on every topology-changing
+  operation:
   - *Split* (`divideWall`, `insertPointOnWall`): copy thickness/`open` to
     both halves. Assign each opening/anchor to whichever half contains its
     position (for an anchor, use the object's center), shifting the second
     half's offsets by the split position. Decide and document the policy
     for an opening that straddles the split point (clamp, reject, or keep
-    on the larger half) — not yet decided, flag as an open call during
-    implementation.
+    on the larger half) when implementing.
   - *Merge* (`weldPoints` or `deletePoint` collapsing two wall keys into
     one): concatenate openings/shift anchors' `along` by the first wall's
     length; pick one thickness (e.g. keep the first wall's); result is
@@ -268,65 +190,55 @@ item 4; `object.anchor` in item 5 references this same wall-key identity).
     show two doors) — an object anchor follows the new wall key belonging
     to its own `roomId`.
   - *Wall gone entirely*: an anchor whose wall key no longer exists (or is
-    no longer in its object's `roomId`'s loop) becomes unanchored — see
-    item 5 — rather than erroring or orphaning data.
+    no longer in its object's `roomId`'s loop) becomes unanchored (see
+    item 5) rather than erroring or orphaning data.
   - *Length changes* (wall-length edit): clamp an opening's **displayed**
     position if it would overhang a shortened wall; never mutate the stored
     offset data.
   - *Accepted gaps* (document, don't solve): openings are lost on edges that
     `cutRoom` recreates; openings/anchors can't span a T-junction.
 - **Selection model:** `sel` needs to address an opening by
-  `{wallKey, openingId}`. With `renderInspector` already refactored into a
-  lookup table (cleanup commit), add `object` and `opening` as two more
-  entries rather than more branches.
+  `{wallKey, openingId}`. `renderInspector`'s lookup table gets `object` and
+  `opening` as two more entries.
 
 ## Item 4 — wall openings
 
 Doors (swing direction + a flip/mirror option for left/right-handed),
-windows, sliding doors, and **garage doors** (same mechanism as a door —
-wide, typically no swing arc to draw, just an opening-width marker on the
-wall — but its own catalog entry since it reads differently on a plan and
-is wide enough that fit-checking against a parked car/truck in item 5's
-catalog is the whole point of having it). Each has an offset along its host
-wall, measured from **the lower id of the wall's sorted endpoint pair**
-(stable regardless of which room's loop defined `w.a`/`w.b`). Built entirely
-on item 3's `wallProps`/`remapWallRefs` design above — no new wall-identity
-mechanism needed. (Open-concept "no wall" edges are a `wallProps` flag from
-item 3, not an opening type — see above.)
+windows, sliding doors, and garage doors (same mechanism as a door — wide,
+typically no swing arc to draw, just an opening-width marker on the wall —
+but its own catalog entry since it reads differently on a plan and is the
+clearance being checked against a parked car/truck from item 5's catalog).
+Each has an offset along its host wall, measured from the lower id of the
+wall's sorted endpoint pair (stable regardless of which room's loop defined
+`w.a`/`w.b`). Built entirely on item 3's `wallProps`/`remapWallRefs` design —
+no new wall-identity mechanism needed. (Open-concept "no wall" edges are a
+`wallProps` flag from item 3, not an opening type.)
 
 ## Item 5 — room-relative object placement
 
 **Catalog** (`js/catalog.js`, extensible array — adding an entry should
-never require touching placement/rendering logic elsewhere): cabinets, sink,
-stove, toilet, shower, tub, table, stairs, and **car**/**truck** — vehicles
-are exactly as "place it and see if it fits" as any other fixture, just
-bigger, and are the main point of having a garage-door catalog entry (item
-4) to check clearance against. Use realistic default dimensions a user can
-resize per-instance (the `w`/`d` fields below are per-object, not fixed by
-type): roughly 6' x 15' for a car, 6.5' x 20' for a truck, as sane
-defaults — not load-bearing numbers, just a reasonable starting box.
+never require touching placement/rendering logic elsewhere): cabinets,
+sink, stove, toilet, shower, tub, table, stairs, car, truck. Vehicles are
+placed and fit-checked like any other fixture, just bigger, and are the
+reason a garage-door catalog entry (item 4) exists. Use realistic default
+dimensions a user can resize per-instance (`w`/`d` below are per-object, not
+fixed by type): roughly 6' x 15' for a car, 6.5' x 20' for a truck, as a
+reasonable starting box.
 
-**Sequenced after items 3-4, not before** (revised from an earlier draft of
-this roadmap): a wall-anchored object's position depends on the wall's
-*interior face*, which doesn't exist until item 3's thickness/`effThickness`
-machinery lands, and reuses item 3's `remapWallRefs` wall-identity handling
-directly rather than building a second mechanism. Building object anchors
-before interior faces exist would mean every anchored object jumps by half
-the wall's thickness once item 3 ships, unless migrated — not worth it when
-reordering avoids the problem entirely.
+**Depends on items 3-4**: a wall-anchored object's position depends on the
+wall's interior face (item 3's `effThickness`), and reuses item 3's
+`remapWallRefs` wall-identity handling directly rather than building a
+second mechanism.
 
-**Why not plain absolute coordinates** (the original design for this item,
-since revised): real placement intent is relative to a wall — "the island's
-front edge is 42 inches from the wall behind it" — not a level-coordinate
-pair. Absolute coordinates don't capture that, and don't follow the wall if
-it moves.
-
-**Why not a general constraint solver**: a single wall anchor per object
-(no object-to-object anchors, no chains, no cycles) covers the realistic
-case without building a solver. Object-to-object anchoring (e.g. "butt this
-cabinet against its neighbor") is explicitly deferred — handle it as a
-one-time snap-on-drop computed at drop time, not a stored, maintained
-relationship.
+**Design**: placement is anchored to a wall, not stored as a plain
+absolute coordinate — real placement intent is relative to a wall ("the
+island's front edge is 42 inches from the wall behind it"), and an object
+anchored to a wall should follow it when the wall moves. A single wall
+anchor per object (no object-to-object anchors, no chains, no cycles) is
+the full scope — not a general constraint solver. Object-to-object
+anchoring (e.g. "butt this cabinet against its neighbor") is out of scope;
+handle it as a one-time snap-on-drop computed at drop time, not a stored,
+maintained relationship.
 
 **Data shape:**
 ```
@@ -342,17 +254,17 @@ level.objects = [{
 }]
 ```
 
-- **Why a single perpendicular distance isn't enough on its own**: it fixes
-  only one degree of freedom. `along` (position along the wall) and `rot`
-  (derived from the wall's current angle) must also be tracked/derived, or
-  the object stops being parallel to its wall as soon as that wall rotates
-  via a corner drag.
+- A single perpendicular distance (`gap`) isn't enough on its own — it
+  fixes only one degree of freedom. `along` (position along the wall) and
+  `rot` (derived from the wall's current angle) must also be
+  tracked/derived, or the object stops being parallel to its wall once the
+  wall rotates via a corner drag.
 - **`resolveObjects(level)`** runs after every commit and during drags,
   before render. For each anchored object, (re)computes `x`, `y`, `rot` from
   the wall's current geometry, the interior face on `roomId`'s side (via
-  item 3's `effThickness`), and `edge`. The resolved values are cached in
-  `x`/`y`/`rot` (not solved fresh on every read) so a vanished anchor leaves
-  the object exactly where it last was.
+  `effThickness`), and `edge`. The resolved values are cached in `x`/`y`/`rot`
+  (not solved fresh on every read) so a vanished anchor leaves the object
+  exactly where it last was.
 - **Anchor becomes invalid** (wall key no longer exists, or no longer
   belongs to `roomId`'s loop) → set `anchor = null`. The object becomes a
   free object at its last resolved position — this uniformly covers a
@@ -362,34 +274,32 @@ level.objects = [{
   side an anchor follows through a `detachRoom`/`detachCorner` operation.
 - **Movement rules — never apply both to the same object:**
   - *Anchored* objects follow their wall automatically via `resolveObjects`
-    — they do **not** need the whole-room-translate carry-along.
-  - *Free* (unanchored) objects use the original movement rule: they move
-    only on a whole-room translate (`roomDrag`/`nudgeRoom`, both of which
-    already compute a clean `{dx,dy}` delta to carry them along by).
-    Reshaping a room (corner/wall drag, divide, cut, length/angle edit)
-    intentionally leaves a free object in place — correct behavior, not a
-    limitation to document.
+    — they do not need the whole-room-translate carry-along.
+  - *Free* (unanchored) objects move only on a whole-room translate
+    (`roomDrag`/`nudgeRoom`, both of which already compute a clean `{dx,dy}`
+    delta to carry them along by). Reshaping a room (corner/wall drag,
+    divide, cut, length/angle edit) leaves a free object in place.
 - **Dragging:**
   - *Anchored*: dragging edits `along`/`gap` in the wall's local frame, with
     snapping and a live readout (e.g. `42" from wall`). Never silently
     breaks the anchor — breaking it is an explicit "Unanchor" action in the
     inspector. Rotation is disabled while anchored (it's derived).
-  - *Free*: drag/rotate freely as planned originally; the inspector shows a
-    computed, **unstored** "distance to nearest wall" readout for reference.
-- **Anchoring flow** (matches the CAD-style flow this was modeled on): an
-  inspector "Measure from wall…" action enters a pick-wall interaction mode
-  (one more entry in `tools.js`) — pick the object edge, then the wall, then
-  type the gap. Optionally, dropping a free object within snap tolerance of
-  a wall inside its room auto-anchors it.
+  - *Free*: drag/rotate freely; the inspector shows a computed, unstored
+    "distance to nearest wall" readout for reference.
+- **Anchoring flow**: an inspector "Measure from wall…" action enters a
+  pick-wall interaction mode (one more entry in `tools.js`) — pick the
+  object edge, then the wall, then type the gap. Optionally, dropping a
+  free object within snap tolerance of a wall inside its room auto-anchors
+  it.
 - **Reparenting:** on drop, a point-in-polygon test against all rooms
   reassigns `roomId` (for both free and anchored objects — an anchored
   object's wall must belong to its new `roomId`'s loop, or it unanchors).
   Deleting a room deletes its objects (with confirmation) or sets
   `roomId = null` (orphaned) — decide which when implementing.
-- **Out of scope for v1** (explicitly deferred, don't build): object-to-object
-  anchors, more than one constraint per object, a general constraint solver.
-- **Fallback if item 5 must ship before item 3 for some reason**: ship free
-  placement only (`anchor` always `null`, field reserved in the schema), add
-  anchoring once item 3/4 land. Do not ship anchors measured from the wall
-  *centerline* and redefine their meaning later — that silently breaks saved
+- **Out of scope**: object-to-object anchors, more than one constraint per
+  object, a general constraint solver.
+- **If item 5 ships before item 3** for some reason: ship free placement
+  only (`anchor` always `null`, field reserved in the schema), add
+  anchoring once item 3/4 land. Never ship anchors measured from the wall
+  centerline and redefine their meaning later — that silently breaks saved
   data.
