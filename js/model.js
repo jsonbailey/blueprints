@@ -213,18 +213,53 @@ function makeLevel(name, rects){
 
 /* Ensure the global id counters are above every numeric id already present,
    so newly minted point/room ids (_pid) and level ids (_lid) can never collide
-   with loaded data. */
+   with loaded data.
+
+   Scans generically: any object anywhere under a level (at any nesting
+   depth, in arrays or plain objects) that has an `id` field contributes to
+   the point/room counter (_pid). This is deliberately not a hardcoded list
+   of `points`/`rooms` — future per-level collections (e.g. `objects`, or
+   openings nested inside a `wallProps` map) are picked up automatically
+   without this function needing a new line per collection type, which is
+   the exact bug class that previously caused id collisions with loaded
+   files. Keys starting with `_` (private caches like `_pt`) are skipped. */
 function syncIds(d){
   let mx=0, lmx=-1;
   const num=id=>{ const m=/(\d+)$/.exec(String(id)); return m ? +m[1] : null; };
+  function scan(node){
+    if(!node || typeof node!=="object") return;
+    if(Array.isArray(node)){ node.forEach(scan); return; }
+    if(typeof node.id==="string" || typeof node.id==="number"){
+      const n=num(node.id); if(n!=null) mx=Math.max(mx,n);
+    }
+    for(const k of Object.keys(node)){
+      if(k==="id" || k.charAt(0)==="_") continue;
+      scan(node[k]);
+    }
+  }
   for(const l of (d.levels||[])){
     if(!l) continue;
     const ln=num(l.id); if(ln!=null) lmx=Math.max(lmx,ln);
-    (l.points||[]).forEach(p=>{ const n=num(p.id); if(n!=null) mx=Math.max(mx,n); });
-    (l.rooms||[]).forEach(r=>{ const n=num(r.id); if(n!=null) mx=Math.max(mx,n); });
+    for(const k of Object.keys(l)){
+      if(k==="id" || k.charAt(0)==="_") continue;
+      scan(l[k]);
+    }
   }
   _pid = Math.max(_pid, mx+1);
   _lid = Math.max(_lid, lmx+1);
+}
+
+/* Escape a string for safe insertion into innerHTML (as text content or
+   inside a quoted attribute value). Every call site that builds HTML out of
+   user-editable data (room/level names, etc.) must run the value through
+   this before interpolating it. */
+function esc(s){
+  return String(s)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#39;");
 }
 
 /* ---------- formatting ---------- */

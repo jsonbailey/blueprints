@@ -34,19 +34,19 @@ function applySnap(v){ return opts.snap>0 ? Math.round(v/opts.snap)*opts.snap : 
 
 function addRoom(){
   const f=activeLevel();
-  snapshot();
-  const W=svg.clientWidth||800, H=svg.clientHeight||600;
-  const w=12, h=10;
-  let [cx,cy]=toWorld(W/2, H/2);
-  cx=applySnap(cx-w/2); cy=applySnap(cy-h/2);
-  const mk=(x,y)=>{ const id="pt"+(_pid++); f.points.push({id,x:snapInch(x),y:snapInch(y)}); return id; };
-  const a=mk(cx,cy), b=mk(cx+w,cy), c=mk(cx+w,cy+h), d=mk(cx,cy+h);
-  const rid="room"+(_pid++);
-  f.rooms.push({id:rid, name:"New Room", kind:"room", loop:[a,b,c,d]});
-  f._pt=new Map(f.points.map(p=>[p.id,p]));
-  deriveWalls(f);
-  sel={type:"room", id:rid};
-  render(); renderInspector();
+  commit(()=>{
+    const W=svg.clientWidth||800, H=svg.clientHeight||600;
+    const w=12, h=10;
+    let [cx,cy]=toWorld(W/2, H/2);
+    cx=applySnap(cx-w/2); cy=applySnap(cy-h/2);
+    const mk=(x,y)=>{ const id="pt"+(_pid++); f.points.push({id,x:snapInch(x),y:snapInch(y)}); return id; };
+    const a=mk(cx,cy), b=mk(cx+w,cy), c=mk(cx+w,cy+h), d=mk(cx,cy+h);
+    const rid="room"+(_pid++);
+    f.rooms.push({id:rid, name:"New Room", kind:"room", loop:[a,b,c,d]});
+    f._pt=new Map(f.points.map(p=>[p.id,p]));
+    deriveWalls(f);
+    sel={type:"room", id:rid};
+  });
 }
 
 /* ---------- dragging: corners and whole walls ---------- */
@@ -198,7 +198,7 @@ function endPointer(e){
       if(mid){ weldPoints(f, drag.id, mid); sel={type:"point", id:mid}; }
     }
     if(!drag.active) drag.preState=null;
-    drag=null; snapViz=null; render(); renderInspector();
+    drag=null; snapViz=null; markDirty();
   }
   if(wallDrag){ wallDrag=null; renderInspector(); }
   if(roomDrag){
@@ -214,7 +214,7 @@ function endPointer(e){
         if(tgt) weldPoints(f, s.id, tgt.id);
       }
     }
-    roomDrag=null; snapViz=null; render(); renderInspector();
+    roomDrag=null; snapViz=null; markDirty();
   }
   if(pan){ pan=null; svg.classList.remove("panning"); }
 }
@@ -278,21 +278,26 @@ function renderLevelTabs(){
   levelTabsEl.querySelectorAll("[data-level]").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.level===activeId)));
 }
 function setLevel(id){
+  // Switching the active level isn't itself an undoable change (only
+  // adding/renaming a level is — see ARCHITECTURE.md), so this uses
+  // markDirty() directly rather than commit().
   if(!data.levels.some(l=>l.id===id)) return;
   data.activeLevelId=id; sel={type:null,id:null};
-  render(); renderInspector();
+  markDirty();
 }
 function addLevel(){
-  snapshot();
-  const lvl = makeLevel("Level "+(data.levels.length+1), []);
-  data.levels.push(lvl);
-  setLevel(lvl.id);
+  commit(()=>{
+    const lvl = makeLevel("Level "+(data.levels.length+1), []);
+    data.levels.push(lvl);
+    data.activeLevelId = lvl.id;
+    sel={type:null,id:null};
+  });
 }
 function renameLevel(id){
   const l=data.levels.find(x=>x.id===id); if(!l) return;
   const name=prompt("Level name:", l.name);
   if(name==null || !name.trim() || name.trim()===l.name) return;
-  snapshot(); l.name=name.trim(); render();
+  commit(()=>{ l.name=name.trim(); });
 }
 
 document.getElementById("optShadow").onchange=e=>{opts.shadow=e.target.checked;render();};
@@ -306,7 +311,9 @@ document.getElementById("btnAddRoom").onclick=addRoom;
 document.getElementById("btnUndo").onclick=undo;
 document.getElementById("btnReset").onclick=()=>{
   if(!confirm("Reset to a single blank level? Unsaved edits will be lost.")) return;
-  loadData(JSON.parse(ORIGINAL)); sel={type:null,id:null}; render(); renderInspector();
+  data = loadData(JSON.parse(ORIGINAL));
+  sel={type:null,id:null};
+  markDirty();
 };
 
 /* save / load */
@@ -326,9 +333,9 @@ document.getElementById("fileInput").onchange=(e)=>{
       // loadData migrates (any schema version) + validates, and only replaces
       // `data` on success — so push the undo entry only after it succeeds.
       const pre=captureState();
-      loadData(obj);
+      data = loadData(obj);
       commitCaptured({preState:pre, committed:false});
-      setProjectName(obj.name); sel={type:null,id:null}; render(); renderInspector();
+      setProjectName(obj.name); sel={type:null,id:null}; markDirty();
     }catch(err){
       alert(err && err.tooNew
         ? "That plan was saved by a newer version of this editor and can't be opened here."
@@ -338,9 +345,35 @@ document.getElementById("fileInput").onchange=(e)=>{
   reader.readAsText(file); e.target.value="";
 };
 
+/* True while the keydown's target is somewhere the user is typing (a form
+   field or a contenteditable, like the project-name titleblock field) —
+   global shortcuts must not fire there, or e.g. Ctrl/Cmd+Z would hijack the
+   browser's native text-undo instead of editing it. */
+function isTypingTarget(e){
+  const t = e.target;
+  if(!t) return false;
+  const tag = t.tagName;
+  return tag==="INPUT" || tag==="SELECT" || tag==="TEXTAREA" || !!t.isContentEditable;
+}
+
 document.addEventListener("keydown",(e)=>{
-  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="z"){ e.preventDefault(); undo(); }
-  if(e.key==="Escape") clearSel();
+  if(isTypingTarget(e)) return;
+
+  if(e.key==="Escape"){
+    // Esc priority: cancel an active tool/mode first, if one is active;
+    // otherwise clear the current selection. There's no "active tool"
+    // concept yet (room-drawing hotkeys are a later item), so this is just
+    // the selection-clear fallback for now — written as an early-return
+    // guard clause so a future tool-cancel check can be inserted above this
+    // line without restructuring the handler.
+    clearSel();
+    return;
+  }
+
+  // e.code (not e.key) for letter shortcuts: e.key changes with Shift/
+  // modifier state ("z" vs "Z"), while e.code ("KeyZ") stays stable
+  // regardless — needed so a future Shift+N can be told apart from plain N.
+  if((e.ctrlKey||e.metaKey) && e.code==="KeyZ"){ e.preventDefault(); undo(); return; }
 });
 
 window.addEventListener("resize", render);

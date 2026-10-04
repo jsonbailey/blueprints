@@ -8,6 +8,19 @@
    and must be pure (no globals, no id minting); it may leave level ids /
    names / `visible` unset, since loadData() fills those in afterwards. */
 const CURRENT_SCHEMA_VERSION = 1;
+/* Per-level field list, shared by stripIdx (save/undo serialization) and
+   loadData (deserialization) so the two can't drift apart — a field added to
+   only one of them would silently vanish from save/undo/autosave on round
+   trip. `id`/`name`/`visible` get special handling in loadData (regenerated
+   when missing/duplicate/invalid); everything else in the list is treated as
+   opaque per-level data that defaults to `[]` when absent. Future per-level
+   fields (e.g. `objects`, `wallProps`, `defaultThickness`) should be added
+   here once; if a future field isn't array-shaped (e.g. `wallProps` as a
+   dict, `defaultThickness` as a number), give it its own default in
+   loadData rather than forcing it through the `[]` convention below. */
+const LEVEL_META_FIELDS = ["id","name","visible"];
+const LEVEL_DATA_FIELDS = ["points","walls","rooms"];
+const LEVEL_FIELDS = [...LEVEL_META_FIELDS, ...LEVEL_DATA_FIELDS];
 const migrations = [
   /* 0 → 1: pre-versioning files used two fixed floors {main, basement}.
      They become two levels "Main" and "Basement" (both visible), Main active.
@@ -46,15 +59,23 @@ function stripIdx(d){
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     activeLevelId: d.activeLevelId,
-    levels: d.levels.map(l=>({id:l.id, name:l.name, visible:l.visible, points:l.points, walls:l.walls, rooms:l.rooms})),
+    levels: d.levels.map(l=>{
+      const out={};
+      LEVEL_FIELDS.forEach(k=>{ out[k]=l[k]; });
+      return out;
+    }),
   };
 }
 
-/* Rebuild `data` from a parsed plan object of any supported schema version
-   (migrated first via migrateData). Then normalizes: missing/duplicate level
-   ids are minted fresh, missing names become "Level N", missing `visible`
-   defaults to true, and an unknown activeLevelId falls back to the first
-   level. Throws (leaving `data` untouched) if the object isn't a plan. */
+/* Pure deserializer: turn a parsed plan object of any supported schema
+   version (migrated first via migrateData) into a brand new {levels,
+   activeLevelId} state object, WITHOUT reading or assigning the global
+   `data` — callers decide whether/when to commit the result to `data`
+   (`data = loadData(raw)`). Never mutates `raw`. Normalizes along the way:
+   missing/duplicate level ids are minted fresh, missing names become
+   "Level N", missing `visible` defaults to true, and an unknown
+   activeLevelId falls back to the first level. Throws if the object isn't a
+   plan (callers should leave their own state untouched on throw). */
 function loadData(raw){
   const obj = migrateData(raw);
   const src = obj.levels.filter(l=>l && typeof l==="object");
@@ -65,13 +86,18 @@ function loadData(raw){
     const id = (typeof l.id==="string" && l.id && !seen.has(l.id)) ? l.id : "lvl"+(_lid++);
     seen.add(id);
     const name = (typeof l.name==="string" && l.name.trim()) ? l.name : "Level "+(i+1);
-    return indexLevel({id, name, visible: l.visible!==false,
-      points:l.points||[], walls:l.walls||[], rooms:l.rooms||[]});
+    const out = {id, name, visible: l.visible!==false};
+    LEVEL_DATA_FIELDS.forEach(k=>{
+      const v = l[k];
+      out[k] = Array.isArray(v) ? v.map(item=>Array.isArray(item.loop) ? {...item, loop:[...item.loop]} : {...item}) : [];
+    });
+    return indexLevel(out);
   });
   if(!levels.length) levels.push(makeLevel("Level 1", []));
   if(!levels.some(l=>l.id===activeId)) activeId = levels[0].id;
-  data = {levels, activeLevelId:activeId};
-  syncIds(data);
+  const result = {levels, activeLevelId:activeId};
+  syncIds(result);
+  return result;
 }
 
 function freshData(){
