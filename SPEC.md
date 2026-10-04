@@ -19,10 +19,23 @@ build a plan by adding rooms and levels in-app or opening a previously saved
 
 - The plan is an ordered array of **levels**
   (`data = {levels:[...], activeLevelId}`). Each level is
-  `{id, name, visible, points, walls, rooms}`: `id` is a unique string
-  (`lvl0`, `lvl1`, ...), `name` is a user-editable display name, and
-  `visible` controls whether the level is drawn as a shadow when it isn't the
-  active level.
+  `{id, name, visible, points, walls, rooms, wallProps, defaultThickness}`:
+  `id` is a unique string (`lvl0`, `lvl1`, ...), `name` is a user-editable
+  display name, and `visible` controls whether the level is drawn as a
+  shadow when it isn't the active level.
+- **Wall thickness**: each level has a `defaultThickness` (feet; 4.5" =
+  2x4 + drywall for a new level). `wallProps` is a sparse dict keyed by the
+  wall's canonical key (`wallKey(a,b)`: the two point ids sorted and joined
+  with `|`; a wall's id is `"w_"+key`) holding per-wall overrides
+  `{thickness?, open?}`. A wall without an explicit `thickness` inherits the
+  level default. `open: true` marks an open-concept (no-wall) edge: it has
+  zero effective thickness and never also stores a thickness.
+  `effThickness(f,w)` is the single source of a wall's thickness. Topology
+  edits re-key `wallProps` via `remapWallRefs` (split → both halves; weld /
+  corner delete → merged wall keeps the first wall's thickness, is open only
+  if all inputs were; detach → both sides), and `deriveWalls` prunes entries
+  whose wall no longer exists. Cut doesn't carry props over to edges it
+  recreates.
 - Each level is a graph of **corner points** joined by **walls**, where
   walls are *derived* from room loops (a room is an ordered loop of point
   ids; an edge shared by two rooms is a single wall).
@@ -61,6 +74,16 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   ready to type over), delete room, divide wall (insert a midpoint into all
   rooms sharing it), delete corner (shrinks a room, or deletes it below 3
   corners with confirmation).
+- Wall thickness: the sidebar "Walls" section sets the active level's
+  default (2x4 + drywall 4.5", 2x6 + drywall 6.5", or a custom value; a bare
+  number is inches). The wall inspector shows the wall's effective thickness
+  and whether it comes from the level default or an override, lets you pick
+  "Use level default", a preset, or a custom override, and has an "Open (no
+  wall)" toggle (which disables the override). Walls draw as bands at their
+  real thickness (square caps, minimum on-screen width; corners aren't
+  mitered yet). Open edges draw as a thin dashed line with a wider
+  invisible hit target, and aren't drawn in the shadow view. All of these
+  are undoable.
 - Constrain a corner angle to 90° or a typed value, with a per-room
   dropdown (labeled by room name) to pick which room's corner when a point
   is shared. Applied once (not a live solver).
@@ -100,7 +123,8 @@ build a plan by adding rooms and levels in-app or opening a previously saved
 - Saved JSON shape: `{name, schemaVersion, activeLevelId, levels:[...]}`
   (`name` is the project name; levels are stored without internal indices).
 - **Schema versioning**: every persisted plan carries an integer
-  `schemaVersion` (currently `CURRENT_SCHEMA_VERSION = 1`). Loading runs the
+  `schemaVersion` (currently `CURRENT_SCHEMA_VERSION = 2`; v1 → v2 adds
+  `wallProps: {}` and `defaultThickness` = 4.5" to every level). Loading runs the
   object through `migrateData`, an ordered chain where `migrations[i]`
   upgrades version `i` to `i+1`; a file with no `schemaVersion` is version 0,
   the legacy two-floor `{main, basement}` shape, which migrates to two levels

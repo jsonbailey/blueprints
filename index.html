@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plan Editor</title>
-<link rel="stylesheet" href="css/app.css?v=1">
+<link rel="stylesheet" href="css/app.css?v=2">
 </head>
 <body>
 
@@ -53,6 +53,19 @@
       <h2>Rooms</h2>
       <div class="btngrid"><button class="btn primary" id="btnAddRoom">+ New room</button></div>
       <p class="muted" style="margin-top:8px">Adds a room to the current level. Drag it by its name to snap it into place. Or draw one: <b>N</b> for a rectangle (click two corners), <b>Shift+N</b> for a freeform outline (click each corner, hold Ctrl/Cmd for a free angle, click the first corner to close). Esc cancels.</p>
+    </div>
+
+    <!-- Walls: the ACTIVE level's default wall thickness (renderWallDefaults
+         in js/app.js keeps it in sync with level switches and undo). -->
+    <div class="section">
+      <h2>Walls</h2>
+      <span class="field-label" id="defThkLabel">Default thickness</span>
+      <select id="defThkSel"></select>
+      <div class="thk-custom" id="defThkCustomRow" hidden>
+        <input type="text" id="defThkCustom" placeholder='inches, e.g. 5.5 or 5½"'>
+        <button class="btn" id="defThkApply">Set</button>
+      </div>
+      <p class="muted" style="margin-top:8px">Used by every wall on this level without its own override. Select a wall to override its thickness or mark it open (no wall).</p>
     </div>
 
     <!-- View -->
@@ -106,12 +119,12 @@
 </div>
 
 <script src="js/vendor/polygon-clipping.min.js"></script>
-<script src="js/model.js?v=1"></script>
-<script src="js/persist.js?v=1"></script>
-<script src="js/state.js?v=1"></script>
-<script src="js/render.js?v=1"></script>
-<script src="js/inspector.js?v=1"></script>
-<script src="js/tools.js?v=1"></script>
-<script src="js/app.js?v=1"></script>
+<script src="js/model.js?v=2"></script>
+<script src="js/persist.js?v=2"></script>
+<script src="js/state.js?v=2"></script>
+<script src="js/render.js?v=2"></script>
+<script src="js/inspector.js?v=2"></script>
+<script src="js/tools.js?v=2"></script>
+<script src="js/app.js?v=2"></script>
 </body>
 </html>

@@ -241,6 +241,34 @@ function renderLevelPanel(){
   });
 }
 
+/* Sidebar "Walls" section: the active level's defaultThickness. Lives in the
+   always-visible sidebar (not the level dropdown) because it's a drafting
+   setting you adjust while working, independent of any selection. Called
+   from every render(); like renderLevelPanel, it only touches the DOM when
+   (active level, its default) actually changes, so an open dropdown or a
+   half-typed custom value survives re-renders from drags/pans. */
+const defThkSel = document.getElementById("defThkSel");
+const defThkRow = document.getElementById("defThkCustomRow");
+const defThkInput = document.getElementById("defThkCustom");
+let _wallDefaultsSig = null;
+defThkSel.innerHTML = thicknessOptionsHtml(null);
+wireThicknessPicker(defThkSel, defThkRow, defThkInput, document.getElementById("defThkApply"), t=>{
+  const f=activeLevel();
+  if(t==null || Math.abs(t-f.defaultThickness)<1e-9){ _wallDefaultsSig=null; render(); return; }   // no-op: resync, no undo entry
+  commit(()=>{ setDefaultThickness(f,t); });
+});
+function renderWallDefaults(){
+  const f=activeLevel();
+  const sig=JSON.stringify([f.id, f.name, f.defaultThickness]);
+  if(sig===_wallDefaultsSig) return;
+  _wallDefaultsSig=sig;
+  document.getElementById("defThkLabel").textContent = "Default thickness · "+f.name;
+  const choice=presetIdFor(f.defaultThickness);
+  defThkSel.value=choice;
+  defThkRow.hidden = choice!=="custom";
+  defThkInput.value = choice==="custom" ? String(+(f.defaultThickness*12).toFixed(3)) : "";
+}
+
 function setLevel(id){
   // Switching the active level isn't itself an undoable change (only
   // adding/renaming/visibility of a level is — see ARCHITECTURE.md), so this
