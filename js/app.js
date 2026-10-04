@@ -26,6 +26,7 @@ function selectRoom(id){ sel={type:"room",id}; render(); renderInspector(); }
    carries the wall key too; `id` alone (opening ids are unique) is what
    generic "is X selected" checks compare. */
 function selectOpening(wallKey, id){ sel={type:"opening",id,wallKey}; render(); renderInspector(); }
+function selectObject(id){ sel={type:"object",id}; render(); renderInspector(); }
 function clearSel(){ sel={type:null,id:null}; render(); renderInspector(); }
 
 function setReadout(label,val){
@@ -67,6 +68,33 @@ function focusRoomName(){
     const rn=document.getElementById("roomName");
     if(rn) startRenameRoom(r, rn);
   },0);
+}
+
+/* ---------- fixtures & furniture (ARCHITECTURE.md item 5, free-placement
+   half) ----------
+   Deliberately NOT a click-to-place tool mode (that pattern, js/tools.js'
+   rect/poly draw tools, exists for multi-vertex shapes — overkill for a
+   single-point drop): each "+ <fixture>" button mints the object at the
+   center of the current viewport (same toWorld(W/2,H/2) approach addRoom()
+   already uses) and selects it immediately, so the user can drag it into
+   place — "add it, then see how well it fits." Buttons are built here
+   (rather than hand-listed in index.html) straight from FIXTURE_TYPES
+   (js/catalog.js), so a new catalog entry needs no index.html edit. */
+const fixtureButtonsEl = document.getElementById("fixtureButtons");
+FIXTURE_TYPES.forEach(t=>{
+  const btn=document.createElement("button");
+  btn.type="button"; btn.className="btn"; btn.textContent="+ "+t.label;
+  btn.onclick=()=>addFixture(t.type);
+  fixtureButtonsEl.appendChild(btn);
+});
+function addFixture(type){
+  const f=activeLevel();
+  commit(()=>{
+    const W=svg.clientWidth||800, H=svg.clientHeight||600;
+    const [cx,cy]=toWorld(W/2,H/2);
+    const o=addObject(f, type, applySnap(cx), applySnap(cy));
+    if(o) sel={type:"object", id:o.id};
+  });
 }
 
 /* ---------- pointer dispatch ----------

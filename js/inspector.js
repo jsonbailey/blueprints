@@ -9,6 +9,7 @@ const INSPECTOR_RENDERERS = {
   point: renderPointInspector,
   room: renderRoomInspector,
   opening: renderOpeningInspector,
+  object: renderObjectInspector,
 };
 
 function renderInspector(){
@@ -376,7 +377,15 @@ function renderRoomInspector(f, body){
   document.getElementById("detachRoom").onclick=()=>{ commit(()=>detachRoom(f,r)); };
   document.getElementById("delRoom").onclick=()=>{
     if(!confirm(`Delete "${r.name}"?`)) return;
-    commit(()=>{ f.rooms=f.rooms.filter(x=>x.id!==r.id); gcPoints(f); deriveWalls(f); sel={type:null,id:null}; });
+    commit(()=>{
+      f.rooms=f.rooms.filter(x=>x.id!==r.id); gcPoints(f); deriveWalls(f);
+      // Orphan (don't delete) any free object that belonged to this room,
+      // rather than silently dropping furniture the user placed — the room
+      // deletion's own confirm() above already covers this as part of "delete
+      // the room", so the object doesn't need a second ceremony.
+      (f.objects||[]).forEach(o=>{ if(o.roomId===r.id) o.roomId=null; });
+      sel={type:null,id:null};
+    });
   };
   document.getElementById("cutRoomBtn").onclick=()=>{
     // Not a plain commit(): on a no-op cut we roll the snapshot back instead
@@ -404,11 +413,18 @@ function renderRoomInspector(f, body){
 function nudgeRoom(r, dir){
   const f=activeLevel(); const step = opts.snap>0 ? opts.snap : 0.25;
   if(r.locked){ setReadout("Locked","unlock this room to move it"); return; }
-  const ids=connectedRoomPoints(f, r.id).ids;
+  const cluster=connectedRoomPoints(f, r.id);
+  const ids=cluster.ids;
   if(!ids.length) return;
   const dx = dir==="left"?-step:dir==="right"?step:0;
   const dy = dir==="up"?-step:dir==="down"?step:0;
-  commit(()=>{ ids.forEach(id=>{const p=ptOf(f,id); p.x+=dx; p.y+=dy;}); });
+  commit(()=>{
+    ids.forEach(id=>{const p=ptOf(f,id); p.x+=dx; p.y+=dy;});
+    // Same carry-along rule as the room-drag interaction (js/tools.js
+    // startDragRoom/room.move): every free object whose roomId is anywhere
+    // in the moved cluster, not just the room nudged directly.
+    (f.objects||[]).forEach(o=>{ if(o.anchor==null && cluster.roomIds.includes(o.roomId)){ o.x+=dx; o.y+=dy; } });
+  });
 }
 
 /* Wall length edit. Deliberately does NOT touch the wall's openings: their
@@ -461,6 +477,71 @@ function deletePoint(f, id){
   remapWallRefs(f, {kind:"merge", pairs});
   gcPoints(f); deriveWalls(f);
   return true;
+}
+
+/* ---------- object inspector (ARCHITECTURE.md item 5, free-placement half)
+   ----------
+   Objects live in a flat level.objects array (unlike openings, which nest
+   under wallProps), so selection ({type:"object", id}) is a direct
+   f.objects.find(). Rotation is a free-form degrees input plus a "Rotate
+   90°" button (no drag-handle interaction — unnecessary complexity for a
+   free object with no wall to measure against); resize is w/d text inputs
+   following the same fmtFt/parseLen convention as the wall-length input in
+   renderWallInspector; mirror is a checkbox. Delete has no confirm() dialog
+   (unlike room deletion): removing one free object is low-stakes — it
+   doesn't cascade into walls/corners/other rooms the way deleting a room
+   does — which matches removeOpening's ✕ button (also confirm-free). */
+function renderObjectInspector(f, body){
+  const o=(f.objects||[]).find(x=>x.id===sel.id); if(!o){clearSel();return;}
+  const def=fixtureTypeDef(o.type);
+  const room=f.rooms.find(r=>r.id===o.roomId);
+  body.innerHTML = `
+    <div class="kicker">${esc((def?def.label:o.type).toUpperCase())} · ${esc(o.id)}</div>
+    <span class="field-label">Room</span>
+    <div class="muted">${room?esc(room.name):"Not in any room"}</div>
+    <div style="height:8px"></div>
+    <span class="field-label">Position (X · Y), feet from origin</span>
+    <div class="bigval" style="font-size:16px">${fmtFt(o.x)} · ${fmtFt(o.y)}</div>
+    <span class="field-label">Size (W × D)</span>
+    <div class="pair">
+      <div><span class="field-label">Width</span><input type="text" id="objW" value="${fmtFt(o.w)}"></div>
+      <div><span class="field-label">Depth</span><input type="text" id="objD" value="${fmtFt(o.d)}"></div>
+    </div>
+    <div class="btngrid" style="margin-top:8px"><button class="btn primary" id="objApplySize">Apply size</button></div>
+    <div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
+      <span class="field-label">Rotation (°)</span>
+      <div class="pair">
+        <div><input type="text" id="objRot" value="${+(o.rot||0).toFixed(1)}"></div>
+        <div style="display:flex;align-items:flex-end"><button class="btn" id="objRot90" style="width:100%">Rotate 90°</button></div>
+      </div>
+      <div class="btngrid" style="margin-top:8px"><button class="btn primary" id="objApplyRot">Apply rotation</button></div>
+      <label class="toggle row" style="margin-top:10px"><input type="checkbox" id="objMirror" ${o.mirror?"checked":""}><span>Mirror</span></label>
+    </div>
+    <div class="btngrid" style="margin-top:12px"><button class="btn danger" id="objDel">Delete</button></div>
+    <p class="muted" style="margin-top:8px">Drag it on the plan to move it; dropping it inside a room reassigns which room it belongs to.</p>`;
+  const applySize=()=>{
+    const wv=document.getElementById("objW").value, dv=document.getElementById("objD").value;
+    const w = wv===fmtFt(o.w) ? o.w : parseLen(wv);
+    const d = dv===fmtFt(o.d) ? o.d : parseLen(dv);
+    if(isNaN(w)||isNaN(d)||w<=0||d<=0){ setReadout("Object","enter a positive width and depth"); return; }
+    if(Math.abs(w-o.w)<1e-9 && Math.abs(d-o.d)<1e-9) return;   // no-op: no undo entry
+    commit(()=>{ o.w=w; o.d=d; });
+  };
+  document.getElementById("objApplySize").onclick=applySize;
+  ["objW","objD"].forEach(id=>{ document.getElementById(id).onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); applySize(); } }; });
+  const applyRot=()=>{
+    const v=parseFloat(document.getElementById("objRot").value);
+    if(isNaN(v)){ setReadout("Object","enter a rotation in degrees"); return; }
+    const norm=((v%360)+360)%360;
+    if(Math.abs(norm-(o.rot||0))<1e-9) return;   // no-op: no undo entry
+    commit(()=>{ o.rot=norm; });
+  };
+  document.getElementById("objApplyRot").onclick=applyRot;
+  document.getElementById("objRot").onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); applyRot(); } };
+  document.getElementById("objRot90").onclick=()=>{ commit(()=>{ o.rot=(((o.rot||0)+90)%360+360)%360; }); };
+  document.getElementById("objMirror").onchange=e=>{ commit(()=>{ o.mirror=e.target.checked; }); };
+  document.getElementById("objDel").onclick=()=>{ commit(()=>{ removeObject(f,o.id); sel={type:null,id:null}; }); };
+  setReadout(def?def.label:o.type, `${fmtFt(o.w)} × ${fmtFt(o.d)}${room?" · "+room.name:" · not in a room"}`);
 }
 
 /* Set the interior angle at V (within room) by rotating one adjacent edge about V. */
