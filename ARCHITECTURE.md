@@ -23,6 +23,11 @@ it go stale.
    only (view-state, not persisted plan data), unchanged from the old tab
    row.
 2. **Room-drawing hotkeys** — `N` (rectangle) / `Shift+N` (freeform) tools.
+2.5. **New: unify room naming with the double-click-in-place pattern** —
+   see detailed section below. Queued right after item 2 (not concurrent
+   with it) because item 2's "focus the room name field on creation"
+   requirement touches the exact same `renderRoomInspector` code this item
+   replaces.
 3. **Wall thickness** — per-level default + per-wall override, standard
    presets (2x4+drywall, 2x6+drywall), interior-offset dimensions/area, plus
    an `open` flag for open-concept (no-wall) edges and the generalized
@@ -161,6 +166,51 @@ left behind while its room's walls move out from under it.
   - New loops should use a consistent winding order. Item 4's interior-offset
     code must use signed area regardless, since older data and `cutRoom`
     output aren't guaranteed to follow it.
+
+## Item 2.5 — unify room naming with the double-click-in-place pattern
+
+The app now has three different "rename" interactions: the project name
+(single-click contenteditable, no competing click action there), the level
+name (double-click contenteditable, since single-click already means
+"switch to this level" — see item 1), and the room name (a persistent
+`<input id="roomName">` living in the Inspector panel, via
+`renderRoomInspector` in `js/inspector.js`). Collapse the room name into the
+same double-click-to-edit pattern as the level name, in **both** places it
+appears:
+
+- **On the plan canvas**: the room name is rendered as SVG `<text>` (in
+  `drawLevel`'s label group, `js/render.js`) — not an HTML element, so
+  `contenteditable` doesn't apply directly to it (SVG text elements don't
+  support it). Double-clicking the on-canvas name needs a small HTML overlay
+  (a plain `<input>` or a `contenteditable` `div`) positioned absolutely at
+  the label's current screen coordinates (via the same `toScreen()`
+  transform `drawLevel` already uses to place the SVG text) when editing
+  starts, removed when editing ends. This needs to track pan/zoom while
+  active (or simplest: just don't allow panning/zooming while the overlay is
+  open, closing it on blur/Enter/Escape same as the level-rename pattern).
+- **In the Inspector panel**: replace the `<input id="roomName">` with a
+  plain text span showing the name, double-click to enter the same in-place
+  edit mode (follow `startRenameLevel`'s exact control-flow pattern in
+  `js/app.js`: Enter commits and blurs, Escape cancels and reverts, blur
+  commits — not a live-every-keystroke update like the current input's
+  `oninput` handler).
+- **Bonus fix that falls out of this naturally**: the current room-rename
+  `oninput`/`onchange` handlers mutate `r.name` directly with **no
+  `commit()`/snapshot at all** — room renames aren't currently undoable.
+  Following the level-rename pattern (which commits once, on blur/Enter,
+  via `commit(()=>{ l.name=text; })`) fixes this as a side effect. Don't
+  lose this when implementing — it's a real gap being closed, not scope
+  creep.
+- **Supersedes item 2's "focus the room name field on creation" mechanism**:
+  item 2 implements this as `#roomName` input's `.focus(); .select();` (the
+  only mechanism available at the time, matching the wall-length input's
+  existing precedent). Once this item lands, "immediately ready to type"
+  instead means programmatically entering the new in-place-edit mode on the
+  name display (same as how a user-initiated double-click would) rather than
+  focusing a plain input — update the post-creation behavior in both
+  `addRoom()` (`js/app.js`) and the `N`/`Shift+N` tools' room-completion path
+  to match, so both still land on "ready to type a name" immediately, just
+  via the new mechanism.
 
 ## Item 3 — wall thickness + `wallProps` + `remapWallRefs`
 
