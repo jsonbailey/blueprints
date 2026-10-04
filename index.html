@@ -13,10 +13,16 @@
     <span class="tb-label">Project</span>
     <span class="tb-value" id="projectName" contenteditable="true" spellcheck="false" title="Click to rename">Untitled Plan</span>
   </div>
-  <div class="tb-cell">
+  <div class="tb-cell tb-levels-cell">
     <span class="tb-label">Sheet</span>
-    <!-- One tab per level, rendered by renderLevelTabs(); "+" adds a level. -->
-    <div class="tb-levels" id="levelTabs" role="group" aria-label="Active level"></div>
+    <!-- Level selector: button opens a dropdown panel (rendered by
+         renderLevelPanel()) listing every level with an eye toggle (shadow
+         visibility) and double-click-to-rename; "+ Add level" mints a level. -->
+    <button type="button" class="tb-value level-trigger" id="levelPanelBtn"
+      aria-haspopup="true" aria-expanded="false" aria-controls="levelPanel">
+      <span id="levelPanelBtnName">Level 1</span><span class="caret" aria-hidden="true">&#9662;</span>
+    </button>
+    <div class="level-panel" id="levelPanel" role="menu" aria-label="Levels" hidden></div>
   </div>
   <div class="tb-cell">
     <span class="tb-label">Scale</span>
