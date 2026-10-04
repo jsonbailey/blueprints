@@ -155,7 +155,11 @@ function drawLevel(f, {shadow}){
         fill: shadow ? "rgba(62,124,168,0.6)" : "var(--graphite)",
         "paint-order":"stroke","stroke":"var(--paper)","stroke-width":shadow?2:3});
       name.textContent = r.name.toUpperCase();
-      if(!shadow){ name.style.cursor="move"; name.addEventListener("pointerdown",(e)=>startDragRoom(e,r.id)); }
+      if(!shadow){
+        name.style.cursor="move";
+        name.addEventListener("pointerdown",(e)=>startDragRoom(e,r.id));
+        name.addEventListener("dblclick",(e)=>{ e.stopPropagation(); startRoomNameOverlay(r,cx,cy); });
+      }
       gLabels.appendChild(name);
       if(!shadow){
         const area = polyArea(f,r.loop);
@@ -201,6 +205,37 @@ function drawLevel(f, {shadow}){
 
   svg.appendChild(gRooms); svg.appendChild(gWalls);
   svg.appendChild(gDims); svg.appendChild(gLabels); svg.appendChild(gHandles); svg.appendChild(gBadge);
+}
+
+/* On-canvas double-click-to-rename for a room's plan label (ARCHITECTURE.md
+   item 2.5). SVG <text> has no contenteditable, so this builds a small HTML
+   overlay — a contenteditable <div> absolutely positioned at the label's
+   current screen coordinates (the same cx/cy toScreen() just computed for
+   the <text> itself) — and hands it to the same startRenameRoom
+   (js/inspector.js) the Inspector panel's room-name display uses, so both
+   entry points share identical commit/undo/Enter/Escape behavior instead of
+   each reimplementing it.
+
+   The overlay is appended to `.stage` (the svg's own parent, which the svg
+   exactly fills, so the svg's screen coordinates double as `.stage`-relative
+   CSS coordinates) as a SIBLING of the svg, not a child of it — so it
+   survives every render() call untouched: drawLevel only ever clears and
+   rebuilds the svg's own children, never touches `.stage` itself. That's
+   what lets the overlay stay open (and keep focus) across a re-render
+   triggered by unrelated activity while editing.
+
+   Pan/zoom are simply disabled for the overlay's lifetime (js/app.js checks
+   _editingRoomId) rather than re-positioning it live through a pan/zoom. */
+function startRoomNameOverlay(r, cx, cy){
+  if(drawToolActive() || _editingLevelId || _editingRoomId) return;
+  const stage = svg.parentNode;
+  const ov = document.createElement("div");
+  ov.className = "room-name-overlay";
+  ov.textContent = r.name;
+  ov.style.left = cx+"px";
+  ov.style.top = cy+"px";
+  stage.appendChild(ov);
+  startRenameRoom(r, ov, { onFinish(){ ov.remove(); } });
 }
 
 function updateScaleReadout(){

@@ -54,10 +54,13 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   Esc cancels, and pressing the same key again exits the tool. New rooms
   are stored with a consistent winding (positive signed area in the y-down
   world frame, i.e. clockwise on screen).
-- Add room, rename room (live; a newly added or drawn room's name field is
-  focused and selected, ready to type), delete room, divide wall (insert a midpoint
-  into all rooms sharing it), delete corner (shrinks a room, or deletes it
-  below 3 corners with confirmation).
+- Add room, rename room (true in-place rename, same double-click pattern as
+  the project/level name: double-click the name — in the Inspector, or its
+  label on the plan — to edit, Enter commits, Escape reverts, blur commits;
+  undoable. A newly added or drawn room enters this edit mode immediately,
+  ready to type over), delete room, divide wall (insert a midpoint into all
+  rooms sharing it), delete corner (shrinks a room, or deletes it below 3
+  corners with confirmation).
 - Constrain a corner angle to 90° or a typed value, with a per-room
   dropdown (labeled by room name) to pick which room's corner when a point
   is shared. Applied once (not a live solver).
