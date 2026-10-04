@@ -80,10 +80,21 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   and whether it comes from the level default or an override, lets you pick
   "Use level default", a preset, or a custom override, and has an "Open (no
   wall)" toggle (which disables the override). Walls draw as bands at their
-  real thickness (square caps, minimum on-screen width; corners aren't
-  mitered yet). Open edges draw as a thin dashed line with a wider
+  real thickness (square caps, minimum on-screen width); on the active
+  level each band is clipped to its adjacent rooms' interior faces, so
+  interior corners read as clean miters at any angle (exterior corners are
+  still square-capped). Open edges draw as a thin dashed line with a wider
   invisible hit target, and aren't drawn in the shadow view. All of these
   are undoable.
+- Interior geometry: each room has an interior-offset polygon — every edge
+  pushed toward that room's interior (decided by the room's own signed
+  area, not an assumed winding) by half its wall's effective thickness,
+  with corners at the intersection of adjacent offset lines (`roomInterior`
+  / `offsetPolygon`). A (near-)collinear vertex, or an intersection more
+  than 10× the half-thickness from the vertex, falls back to projecting the
+  vertex onto each offset line. Room area (plan label and Inspector "Floor
+  area (inside walls)") is this interior area (`interiorArea`); `polyArea`
+  remains the centerline area.
 - Constrain a corner angle to 90° or a typed value, with a per-room
   dropdown (labeled by room name) to pick which room's corner when a point
   is shared. Applied once (not a live solver).
@@ -112,7 +123,9 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   visible levels; toggles for shadow, dimensions, room names & area, grid,
   and snap step; fit-to-view; pan/zoom.
 - Dimensions render inside each room so labels never overlap the neighbor
-  across a shared wall.
+  across a shared wall: every room running along a wall gets its own label
+  (`wallSides`) showing that room's interior clear length along it, so a
+  shared wall shows two labels, which can differ.
 
 ### State
 
