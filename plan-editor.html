@@ -46,6 +46,12 @@
   .tb-label{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
   .tb-value{font-family:var(--mono);font-size:13px;color:var(--ink);white-space:nowrap}
   .tb-project .tb-value{font-size:16px;letter-spacing:.04em;font-weight:600}
+  #projectName{
+    text-transform:uppercase;cursor:text;border-radius:3px;
+    padding:1px 4px;margin:-1px -4px;outline:none;
+  }
+  #projectName:hover{background:rgba(236,232,223,.08)}
+  #projectName:focus{background:rgba(236,232,223,.12);box-shadow:0 0 0 1px var(--blueprint)}
   .tb-readout{flex:1 1 auto;border-right:none}
   .tb-readout .tb-value{color:var(--markup)}
   .tb-floor{display:flex;gap:0}
@@ -135,7 +141,7 @@
 <header class="titleblock">
   <div class="tb-cell tb-project">
     <span class="tb-label">Project</span>
-    <span class="tb-value">UNTITLED PLAN</span>
+    <span class="tb-value" id="projectName" contenteditable="true" spellcheck="false" title="Click to rename">Untitled Plan</span>
   </div>
   <div class="tb-cell">
     <span class="tb-label">Sheet</span>
@@ -534,6 +540,21 @@ function polyArea(f, loop){
 function centroid(f, loop){
   let x=0,y=0; loop.forEach(id=>{const p=ptOf(f,id); x+=p.x; y+=p.y;}); return {x:x/loop.length, y:y/loop.length};
 }
+
+/* ---------- project name ---------- */
+const projNameEl = document.getElementById("projectName");
+let projectName = projNameEl.textContent.trim() || "Untitled Plan";
+function setProjectName(name){
+  projectName = (name||"").trim() || "Untitled Plan";
+  projNameEl.textContent = projectName;
+  document.title = projectName + " — Plan Editor";
+}
+setProjectName(projectName);
+projNameEl.addEventListener("keydown", e=>{
+  if(e.key==="Enter"){ e.preventDefault(); projNameEl.blur(); }
+  else if(e.key==="Escape"){ e.preventDefault(); setProjectName(projectName); projNameEl.blur(); }
+});
+projNameEl.addEventListener("blur", ()=> setProjectName(projNameEl.textContent));
 
 /* ---------- app state ---------- */
 let data = freshData();
@@ -1281,9 +1302,11 @@ document.getElementById("btnReset").onclick=()=>{
 
 /* save / load */
 document.getElementById("btnSave").onclick=()=>{
-  const blob=new Blob([JSON.stringify(stripIdx(data),null,2)],{type:"application/json"});
+  const out={name:projectName, ...stripIdx(data)};
+  const blob=new Blob([JSON.stringify(out,null,2)],{type:"application/json"});
   const a=document.getElementById("dl"); a.href=URL.createObjectURL(blob);
-  a.download="plan.json"; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  const slug=projectName.trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"") || "plan";
+  a.download=slug+".json"; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 };
 document.getElementById("btnLoad").onclick=()=>document.getElementById("fileInput").click();
 document.getElementById("fileInput").onchange=(e)=>{
@@ -1292,7 +1315,7 @@ document.getElementById("fileInput").onchange=(e)=>{
   reader.onload=()=>{ try{
       const obj=JSON.parse(reader.result);
       if(!obj.main||!obj.basement) throw new Error("missing floors");
-      snapshot(); loadData(obj); sel={type:null,id:null}; render(); renderInspector();
+      snapshot(); loadData(obj); setProjectName(obj.name); sel={type:null,id:null}; render(); renderInspector();
     }catch(err){ alert("Couldn't read that file — it doesn't look like a saved plan."); }
   };
   reader.readAsText(file); e.target.value="";
