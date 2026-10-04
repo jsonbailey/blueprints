@@ -43,9 +43,26 @@ function buildLevel(rects){
   return indexLevel(f);
 }
 
+/* Canonical wall identity: the two endpoint point ids, sorted, joined by "|".
+   Independent of which room's loop (or which direction) produced the edge.
+   This is the key of `level.wallProps` (item 3), and a wall's `id` is always
+   "w_" + wallKey(a,b) — use wallKey()/wallKeyOf() rather than re-deriving
+   the format anywhere else, so the two can never drift apart. */
+function wallKey(a,b){ return [a,b].slice().sort().join("|"); }
+function wallKeyOf(w){ return wallKey(w.a, w.b); }
+function wallIdForKey(key){ return "w_"+key; }
+function wallKeyFromId(id){ return String(id).slice(2); }
+
 /* Walls are DERIVED from room loops: every edge of every room is a wall, and an
    edge shared by two rooms is one wall. Stable id keyed on the endpoint pair, so
-   selection survives moves; topology edits just rebuild this. */
+   selection survives moves; topology edits just rebuild this.
+
+   Also the single chokepoint that keeps `f.wallProps` free of orphans: every
+   topology change ends in deriveWalls(), so any wallProps entry whose key is
+   no longer a real wall is pruned here. Topology ops that want props to
+   SURVIVE a re-key must call remapWallRefs() BEFORE this (while the old keys
+   are still present), so the props are already on the new keys by the time
+   the prune runs. */
 function deriveWalls(f){
   const seen=new Map(); const walls=[];
   f.rooms.forEach(r=>{
@@ -53,13 +70,189 @@ function deriveWalls(f){
     for(let i=0;i<L.length;i++){
       const a=L[i], b=L[(i+1)%L.length];
       if(a===b) continue;
-      const key=[a,b].slice().sort().join("|");
+      const key=wallKey(a,b);
       if(seen.has(key)) continue;
-      const w={id:"w_"+key, a, b, room:r.id}; seen.set(key,w); walls.push(w);
+      const w={id:wallIdForKey(key), a, b, room:r.id}; seen.set(key,w); walls.push(w);
     }
   });
   f.walls=walls;
+  pruneWallProps(f, seen);
   return f;
+}
+
+/* ---------- wall thickness / wallProps (ARCHITECTURE.md item 3) ----------
+   level.wallProps = { [wallKey]: {thickness?, open?, ...} }. Sparse: a wall
+   with no entry (or no `thickness`) uses level.defaultThickness, so changing
+   the level default propagates to every wall without an explicit override.
+   Invariant: an `open` wall never also stores a `thickness` (setWallOpen
+   drops it), so the data is never ambiguous. Entries may carry more fields
+   later (item 4 adds `openings:[...]`) — code here copies unknown fields
+   through rather than assuming the shape is exactly {thickness, open}. */
+
+/* Standard presets, in FEET (like every other length in the model). Nominal
+   2x4 = 1.5"x3.5" actual, 2x6 = 1.5"x5.5"; plus 1/2" drywall on both faces. */
+const WALL_PRESETS = [
+  {id:"2x4", label:"2x4 + drywall", thickness:(3.5+2*0.5)/12},   // 4.5"  = 0.375 ft
+  {id:"2x6", label:"2x6 + drywall", thickness:(5.5+2*0.5)/12},   // 6.5"  ≈ 0.5417 ft
+];
+/* Baseline level default (fresh levels, and levels loaded without one). */
+const DEFAULT_WALL_THICKNESS = WALL_PRESETS[0].thickness;
+const MAX_WALL_THICKNESS = 4;                            // ft — sanity bound for typed values
+
+function isValidThickness(t){ return typeof t==="number" && isFinite(t) && t>0 && t<=MAX_WALL_THICKNESS; }
+
+/* Parse a typed wall thickness. Unlike parseLen (where a bare number means
+   feet), a bare number here means INCHES — nobody means a 5-foot wall when
+   they type "5". Explicit units (5", 0' 5", 0.5') go through parseLen.
+   Returns feet, or NaN if invalid/out of range. */
+function parseThickness(str){
+  if(str==null) return NaN;
+  const s=String(str).trim();
+  const t = /^\d+(?:\.\d+)?$/.test(s) ? parseFloat(s)/12 : parseLen(s);
+  return isValidThickness(t) ? t : NaN;
+}
+/* Thickness for display, in inches (fmtFt rounds to whole inches, which
+   would show 4.5" as 5"). */
+function fmtThickness(ft){ return (+(ft*12).toFixed(2))+'"'; }
+
+function wallPropsOf(f, w){ return f.wallProps ? f.wallProps[wallKeyOf(w)] : undefined; }
+function isOpenWall(f, w){ const p=wallPropsOf(f,w); return !!(p && p.open===true); }
+/* The explicit per-wall override, or null if the wall inherits the default. */
+function wallThicknessOverride(f, w){ const p=wallPropsOf(f,w); return p && isValidThickness(p.thickness) ? p.thickness : null; }
+/* THE effective thickness of a wall — the one function everything that
+   cares about thickness (rendering, inspector, and item 3's later interior-
+   offset geometry) must consult. Open → 0 (offset is to the centerline). */
+function effThickness(f, w){
+  if(isOpenWall(f,w)) return 0;
+  const t=wallThicknessOverride(f,w);
+  return t!=null ? t : f.defaultThickness;
+}
+
+/* Mutators — pure model edits; UI callers wrap them in commit(). */
+function _tidyWallProps(f, key){
+  const p=f.wallProps[key];
+  if(p && !Object.keys(p).length) delete f.wallProps[key];
+}
+/* Set (t in feet) or clear (t==null) a wall's explicit thickness override.
+   Refused (returns false) on an open wall — un-flag it first. */
+function setWallThickness(f, w, t){
+  if(isOpenWall(f,w)) return false;
+  if(t!=null && !isValidThickness(t)) return false;
+  if(!f.wallProps) f.wallProps={};
+  const key=wallKeyOf(w);
+  if(t==null){ if(f.wallProps[key]){ delete f.wallProps[key].thickness; _tidyWallProps(f,key); } }
+  else { f.wallProps[key] = {...(f.wallProps[key]||{}), thickness:t}; }
+  return true;
+}
+/* Flag/unflag a wall as open (no wall). Flagging drops any explicit
+   thickness so an open wall never carries a stale, ambiguous value;
+   un-flagging therefore returns the wall to the level default. */
+function setWallOpen(f, w, open){
+  if(!f.wallProps) f.wallProps={};
+  const key=wallKeyOf(w);
+  if(open){ const p={...(f.wallProps[key]||{}), open:true}; delete p.thickness; f.wallProps[key]=p; }
+  else if(f.wallProps[key]){ delete f.wallProps[key].open; _tidyWallProps(f,key); }
+}
+function setDefaultThickness(f, t){
+  if(!isValidThickness(t)) return false;
+  f.defaultThickness=t; return true;
+}
+
+/* Drop every wallProps entry whose key isn't a wall in `liveKeys` (a Set or
+   Map of wall keys — deriveWalls passes the one it just built). */
+function pruneWallProps(f, liveKeys){
+  if(!f.wallProps) return;
+  for(const k of Object.keys(f.wallProps)) if(!liveKeys.has(k)) delete f.wallProps[k];
+}
+
+/* Wall key of every edge of a loop, by edge index (edge i = loop[i] →
+   loop[i+1]); null for a zero-length edge (repeated id). Two loops that map
+   elementwise (same length, point ids substituted) therefore pair up edge
+   by edge — the basis of the "rekey" ops below. */
+function loopWallKeys(loop){
+  const out=[];
+  for(let i=0;i<loop.length;i++){ const a=loop[i], b=loop[(i+1)%loop.length]; out.push(a===b?null:wallKey(a,b)); }
+  return out;
+}
+function liveWallKeys(f){
+  const s=new Set(); f.rooms.forEach(r=>loopWallKeys(r.loop).forEach(k=>{ if(k) s.add(k); })); return s;
+}
+/* Copy of a props entry without `openings` (JSON-safe deep copy). */
+function _propsSansOpenings(p){ const c=JSON.parse(JSON.stringify(p)); delete c.openings; return c; }
+
+/* Merge the props of several walls collapsing into one key. `list` is in
+   priority order (the first is "the first wall"); undefined = a wall with no
+   entry (defaults: inherits thickness, not open). Rules (ARCHITECTURE.md):
+   - thickness: the first contributor that has an explicit override wins;
+   - open: only if EVERY contributor was open (then no thickness kept);
+   - any other field: first contributor that has it wins.
+   TODO(item 4): openings should be concatenated with the later walls'
+   offsets shifted by the earlier walls' lengths; for now the winning
+   contributor's `openings` (if any) are kept as-is. */
+function mergeWallProps(list){
+  const out={};
+  for(let i=list.length-1;i>=0;i--) if(list[i]) Object.assign(out, JSON.parse(JSON.stringify(list[i])));
+  const tSrc=list.find(p=>p && isValidThickness(p.thickness));
+  if(tSrc) out.thickness=tSrc.thickness; else delete out.thickness;
+  if(list.length && list.every(p=>p && p.open===true)){ out.open=true; delete out.thickness; }
+  else delete out.open;
+  return out;
+}
+
+/* Re-key wall references (today: wallProps; item 5 adds object anchors) across
+   a topology change. Must run AFTER room loops are rewritten but BEFORE the
+   deriveWalls() that ends the op (whose prune removes the now-dead old keys).
+   This function only ever WRITES new keys; deleting dead ones is left to the
+   prune, so a key that is still a live wall (e.g. the neighbour's side of a
+   detached shared wall) keeps its props automatically.
+
+   op shapes:
+   - {kind:"split", a, b, mid}: wall a|b gained point `mid` (divideWall,
+     insertPointOnWall). Both halves get a copy of thickness/open.
+     TODO(item 4): assign each opening to the half containing it, shifting
+     the second half's offsets by the split position, and pick a policy for
+     an opening straddling the split. Until then openings are not carried
+     (none exist yet).
+   - {kind:"detach", pairs:[[oldKey,newKey],...]}: a wall was duplicated
+     onto fresh point ids (detachRoom, detachCorner). The new key gets a
+     copy of thickness/open; openings move to the new key only if the old
+     key is no longer a live wall (so they never appear on both sides).
+   - {kind:"merge", pairs:[[oldKey,newKey|null],...]}: point ids were
+     substituted/removed so several old keys may land on one new key
+     (weldPoints, deletePoint). Include an identity pair [k,k] for any wall
+     already at a target key, so it counts as a contributor (and as "the
+     first wall"). newKey null = collapsed to zero length → props dropped. */
+function remapWallRefs(f, op){
+  if(!f.wallProps) f.wallProps={};
+  const wp=f.wallProps;
+  if(op.kind==="split"){
+    const p=wp[wallKey(op.a,op.b)]; if(!p) return;
+    [wallKey(op.a,op.mid), wallKey(op.mid,op.b)].forEach(k=>{ wp[k]=_propsSansOpenings(p); });
+  } else if(op.kind==="detach"){
+    const live=liveWallKeys(f), movedOpenings=new Set();
+    op.pairs.forEach(([o,n])=>{
+      if(!o || !n || o===n || !wp[o]) return;
+      const c=_propsSansOpenings(wp[o]);
+      if(wp[o].openings && !live.has(o) && !movedOpenings.has(o)){ c.openings=JSON.parse(JSON.stringify(wp[o].openings)); movedOpenings.add(o); }
+      wp[n]=c;
+    });
+  } else if(op.kind==="merge"){
+    const groups=new Map();
+    op.pairs.forEach(([o,n])=>{
+      if(!o || !n) return;
+      if(!groups.has(n)) groups.set(n,[]);
+      const g=groups.get(n); if(!g.includes(o)) g.push(o);
+    });
+    groups.forEach((olds,n)=>{
+      if(olds.every(o=>o===n)) return;                        // untouched wall
+      const order=olds.includes(n) ? [n, ...olds.filter(o=>o!==n)] : olds;
+      if(!order.some(k=>wp[k])) return;                      // nothing to carry
+      const m=mergeWallProps(order.map(k=>wp[k]));
+      if(Object.keys(m).length) wp[n]=m; else delete wp[n];
+    });
+  } else {
+    throw new Error("remapWallRefs: unknown op "+op.kind);
+  }
 }
 function indexLevel(f){
   f._pt = new Map(f.points.map(p=>[p.id,p]));
@@ -77,12 +270,19 @@ function wallById(f,id){ return f.walls.find(w=>w.id===id); }
 /* Weld: fuse point `fromId` into `toId` (they become one anchored corner). */
 function weldPoints(f, fromId, toId){
   if(fromId===toId) return;
+  const pairs=[];
   f.rooms.forEach(r=>{
+    const oldKeys=loopWallKeys(r.loop);
     r.loop = r.loop.map(id=>id===fromId?toId:id);
+    // elementwise substitution, so edge i still corresponds edge-for-edge
+    // (collapsing duplicates below only drops the zero-length edges)
+    const newKeys=loopWallKeys(r.loop);
+    oldKeys.forEach((k,i)=>{ if(k) pairs.push([k,newKeys[i]]); });
     // collapse any consecutive duplicates created by the weld
     const out=[]; for(let i=0;i<r.loop.length;i++){ if(r.loop[i]!==r.loop[(i+1)%r.loop.length]) out.push(r.loop[i]); }
     r.loop = out.length>=3 ? out : r.loop;
   });
+  remapWallRefs(f, {kind:"merge", pairs});
   gcPoints(f); deriveWalls(f);
 }
 
@@ -94,7 +294,10 @@ function detachRoom(f, room){
     const p=ptOf(f,id); const nid="p"+(_pid++);
     f.points.push({x:p.x,y:p.y,id:nid}); map.set(id,nid);
   });
+  const oldKeys=loopWallKeys(room.loop);
   room.loop = room.loop.map(id=>map.get(id)||id);
+  const newKeys=loopWallKeys(room.loop);
+  remapWallRefs(f, {kind:"detach", pairs:oldKeys.map((k,i)=>[k,newKeys[i]])});
   f._pt=new Map(f.points.map(p=>[p.id,p]));
   gcPoints(f); deriveWalls(f);
 }
@@ -103,12 +306,17 @@ function detachRoom(f, room){
    the junction. Re-snap by dragging the pieces back together. */
 function detachCorner(f, id){
   const rs=roomsAt(f,id);
+  const pairs=[];
   rs.forEach((room,idx)=>{
     if(idx===0) return;                 // first room keeps the original id
     const p=ptOf(f,id); const nid="p"+(_pid++);
     f.points.push({x:p.x,y:p.y,id:nid});
+    const oldKeys=loopWallKeys(room.loop);
     room.loop = room.loop.map(x=>x===id?nid:x);
+    const newKeys=loopWallKeys(room.loop);
+    oldKeys.forEach((k,i)=>pairs.push([k,newKeys[i]]));
   });
+  remapWallRefs(f, {kind:"detach", pairs});
   f._pt=new Map(f.points.map(p=>[p.id,p]));
   gcPoints(f); deriveWalls(f);
 }
@@ -128,6 +336,7 @@ function divideWall(f, w){
     }
     r.loop=out;
   });
+  remapWallRefs(f, {kind:"split", a, b, mid:mid.id});
   f._pt=new Map(f.points.map(p=>[p.id,p]));
   deriveWalls(f);
   return mid.id;
@@ -193,6 +402,7 @@ function insertPointOnWall(f,a,b,x,y){
     r.loop=out;
   });
   if(!inserted){ f.points.pop(); return null; }
+  remapWallRefs(f, {kind:"split", a, b, mid:mid.id});
   f._pt=new Map(f.points.map(p=>[p.id,p])); deriveWalls(f); return mid.id;
 }
 
@@ -243,6 +453,11 @@ function cutRoom(f, cutter){
   }
   f.rooms = f.rooms.filter(r=>!removeIds.has(r.id));
   f._pt=new Map(f.points.map(p=>[p.id,p]));
+  // No remapWallRefs here, deliberately (ARCHITECTURE.md accepted gap): the
+  // cut rebuilds loops from scratch. Edges that come out with the same two
+  // point ids (ringToLoop reuses existing corners) keep their key and so
+  // keep their wallProps; edges the cut recreates/splits start fresh at the
+  // level default, and deriveWalls() prunes the props of consumed edges.
   gcPoints(f); deriveWalls(f);
   return {changed, dropped, err:false};
 }
@@ -251,7 +466,8 @@ function cutRoom(f, cutter){
    seed rectangles — [] for a blank level. */
 function makeLevel(name, rects){
   const g = buildLevel(rects||[]);
-  return indexLevel({id:"lvl"+(_lid++), name, visible:true, points:g.points, walls:g.walls, rooms:g.rooms});
+  return indexLevel({id:"lvl"+(_lid++), name, visible:true, points:g.points, walls:g.walls, rooms:g.rooms,
+    wallProps:{}, defaultThickness:DEFAULT_WALL_THICKNESS});
 }
 
 /* Ensure the global id counters are above every numeric id already present,
