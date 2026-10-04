@@ -2,7 +2,7 @@
 
 ## What it is
 
-A single self-contained HTML file (`plan-editor.html`) — SVG + vanilla
+A single self-contained HTML file (`index.html`) — SVG + vanilla
 JavaScript, with the [polygon-clipping](https://github.com/mfogel/polygon-clipping)
 library vendored inline — that runs locally by double-clicking. No install,
 no server, no build step, works offline.
