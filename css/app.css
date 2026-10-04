@@ -160,6 +160,12 @@
   select:disabled{opacity:.5;cursor:not-allowed}
   .thk-src{font-family:var(--ui);font-size:11px;color:var(--ink-dim);margin-left:6px}
 
+  /* Wall openings list in the wall inspector: one row per opening — a
+     select-it button (summary) and a narrow delete button. */
+  .op-row{display:flex;gap:6px;margin-top:6px}
+  .op-row .op-pick{flex:1;text-align:left;font-family:var(--mono);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .op-row .op-del{flex:0 0 auto;padding-left:10px;padding-right:10px}
+
   /* Room name: double-click-in-place, same pattern as .level-name. */
   .room-name-display{
     font-family:var(--mono);font-size:13px;color:var(--ink);

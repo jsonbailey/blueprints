@@ -23,7 +23,7 @@
    top-level bindings must already exist by then.
    ========================================================================= */
 
-let interaction = null;  // {kind:"point"|"wall"|"room"|"pan", ...} or null
+let interaction = null;  // {kind:"point"|"wall"|"room"|"opening"|"pan", ...} or null
 let snapViz = null;      // transient drag-time snap feedback {targetId?, edge?, gx?, gy?}
 const DRAG_PX = 3;       // movement before a press counts as a drag (vs. a click)
 const SNAP_PX = 12;      // pixel radius for connection/alignment snapping
@@ -83,6 +83,20 @@ function startDragWall(e,id){
   const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
   interaction={kind:"wall", id, axis: horiz ? "y" : "x",
     aId:w.a, bId:w.b, aStart:{x:a.x,y:a.y}, bStart:{x:b.x,y:b.y},
+    startClient:{x:e.clientX,y:e.clientY},
+    startWorld:eventWorld(e),
+    preState:captureState(), committed:false, active:false };
+  svg.setPointerCapture(e.pointerId);
+}
+
+/* Press on an opening's glyph (js/render.js drawOpenings): select it, and arm
+   a drag that slides it along its own wall. The wall key is captured here
+   (openings are addressed by {wallKey, id}); topology can't change mid-drag. */
+function startDragOpening(e, key, id){
+  e.stopPropagation();
+  const f=activeLevel(); const o=findOpening(f,key,id); if(!o) return;
+  selectOpening(key, id);
+  interaction={kind:"opening", key, id, startAlong:o.along,
     startClient:{x:e.clientX,y:e.clientY},
     startWorld:eventWorld(e),
     preState:captureState(), committed:false, active:false };
@@ -193,6 +207,37 @@ const interactionHandlers = {
         }
       }
       interaction=null; snapViz=null; markDirty();
+    },
+  },
+
+  /* slide an opening along its wall: the pointer delta is projected onto the
+     wall's lo → hi direction (so motion across the wall is ignored), the
+     resulting center offset is grid-snapped (Alt bypasses), then moved to
+     the nearest position that keeps the opening inside the wall and clear of
+     its neighbours (nearestOpeningSlot — the same rule creation uses). The
+     undo snapshot is pushed lazily, only once the offset actually changes. */
+  opening: {
+    move(it,e){
+      if(!pastThreshold(it,e)) return;
+      const f=activeLevel(); const o=findOpening(f,it.key,it.id); const fr=wallFrame(f,it.key);
+      if(!o || !fr) return;
+      const [wx,wy]=eventWorld(e);
+      let want = it.startAlong + (wx-it.startWorld[0])*fr.dir.x + (wy-it.startWorld[1])*fr.dir.y;
+      if(!e.altKey) want=applySnap(want);
+      const slot=nearestOpeningSlot(openingsAt(f,it.key), want, o.width, fr.len, o.id);
+      if(slot!=null && Math.abs(slot-o.along)>1e-9){
+        commitCaptured(it);
+        o.along=_r6(slot);
+        render();
+      }
+      setReadout(openingLabel(o.type), `${fmtFt(o.along-o.width/2)} · ${fmtFt(fr.len-o.along-o.width/2)} to the wall ends`);
+    },
+    end(it){
+      if(it.active && it.committed){
+        const list=openingsAt(activeLevel(), it.key); list.sort((a,b)=>a.along-b.along);
+      }
+      if(!it.active) it.preState=null;
+      interaction=null; markDirty();
     },
   },
 

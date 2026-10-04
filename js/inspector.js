@@ -2,12 +2,13 @@
 
 /* renderInspector dispatches on sel.type via a lookup table — each selection
    type owns its own render function, so adding a new type later (upcoming:
-   `object`, `opening`) is "add one more table entry," not another branch in
-   a growing if-chain. */
+   item 5's `object`) is "add one more table entry," not another branch in
+   a growing if-chain. An `opening` selection is {type, id, wallKey}. */
 const INSPECTOR_RENDERERS = {
   wall: renderWallInspector,
   point: renderPointInspector,
   room: renderRoomInspector,
+  opening: renderOpeningInspector,
 };
 
 function renderInspector(){
@@ -89,7 +90,9 @@ function renderWallInspector(f, body){
       <p class="muted" style="margin-top:4px">${open
         ? "Open-concept edge: drawn as a dashed line, zero thickness. Uncheck to restore a wall at the level default."
         : "Override this wall's thickness, or leave it on the level default (set in the Walls panel)."}</p>
-    </div>`;
+    </div>
+    ${wallOpeningsSectionHtml(f, w, len, open)}`;
+  wireWallOpeningsSection(f, w, len, open);
   const thkSel=document.getElementById("thkSel");
   thkSel.value = thkChoice;
   wireThicknessPicker(thkSel, document.getElementById("thkCustomRow"), document.getElementById("thkCustom"),
@@ -112,6 +115,117 @@ function renderWallInspector(f, body){
     commit(()=>{ mid=divideWall(f,w); sel={type:"point",id:mid}; });
   };
   setReadout("Wall", fmtFt(len));
+}
+
+/* ---------- wall openings (ARCHITECTURE.md item 4) ----------
+   The wall inspector lists the wall's openings (click one to select it, ✕
+   to delete) and has one "+ <type>" button per catalog entry, which places
+   that type at the wall's center — or the nearest free spot if something is
+   already there — and selects it. Selected openings get their own inspector
+   (renderOpeningInspector). Every mutation goes through commit(). Element
+   ids are per-opening/per-type (opSel-<id>, opDel-<id>, opAdd-<type>) so
+   they can be wired with getElementById. */
+function openingSummary(o){ return `${openingLabel(o.type)} · ${fmtFt(o.width)} wide · center ${fmtFt(o.along)}`; }
+function wallOpeningsSectionHtml(f, w, len, open){
+  const key=wallKeyOf(w), list=openingsAt(f,key);
+  const rows=list.map(o=>`<div class="op-row">
+      <button class="btn op-pick" id="opSel-${esc(o.id)}">${esc(openingSummary(o))}</button>
+      <button class="btn danger op-del" id="opDel-${esc(o.id)}" title="Delete">✕</button>
+    </div>`).join("");
+  return `<div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
+      <span class="field-label">Openings</span>
+      ${open
+        ? `<p class="muted">Doors and windows can't go on an open (no-wall) edge.${list.length?` ${list.length} opening${list.length>1?"s are":" is"} hidden here and will reappear if you uncheck Open.`:""}</p>`
+        : `${rows || '<p class="muted">None yet.</p>'}
+      <div class="btngrid" style="margin-top:8px">
+        ${OPENING_TYPES.map(t=>`<button class="btn" id="opAdd-${esc(t.type)}">+ ${esc(t.label)}</button>`).join("")}
+      </div>
+      <p class="muted" style="margin-top:4px">Offsets are measured to the opening's center from corner ${esc(wallFrame(f,key).lo)}. Drag an opening on the plan to slide it along the wall.</p>`}
+    </div>`;
+}
+function wireWallOpeningsSection(f, w, len, open){
+  if(open) return;
+  const key=wallKeyOf(w);
+  openingsAt(f,key).forEach(o=>{
+    document.getElementById("opSel-"+o.id).onclick=()=>selectOpening(key, o.id);
+    document.getElementById("opDel-"+o.id).onclick=()=>{ commit(()=>{ removeOpening(f,key,o.id); }); };
+  });
+  OPENING_TYPES.forEach(t=>{
+    document.getElementById("opAdd-"+t.type).onclick=()=>{
+      // check first, so a refusal doesn't leave an empty undo entry
+      if(nearestOpeningSlot(openingsAt(f,key), len/2, t.defaultWidth, len)==null){
+        setReadout(t.label, `no room on this ${fmtFt(len)} wall for a ${fmtFt(t.defaultWidth)} ${t.label.toLowerCase()}`);
+        return;
+      }
+      commit(()=>{ const o=addOpening(f, w, {type:t.type}); if(o) sel={type:"opening", id:o.id, wallKey:key}; });
+    };
+  });
+}
+
+function renderOpeningInspector(f, body){
+  const key=sel.wallKey, o=key!=null ? findOpening(f,key,sel.id) : null;
+  const fr=o && wallFrame(f,key);
+  if(!o || !fr){ clearSel(); return; }
+  const w=wallById(f, wallIdForKey(key));
+  const def=openingTypeDef(o.type), fields=def ? def.fields : [];
+  const open=isOpenWall(f,{a:fr.lo,b:fr.hi});
+  const disp=displayedOpening(o, fr.len);
+  // swing choices are labeled by room so a shared wall is unambiguous:
+  // value "in:<roomId>" / "out:<roomId>" (out = away from that room)
+  const rooms=wallSides(f,{a:fr.lo,b:fr.hi}).map(s=>s.room);
+  let swingOpts="", swingVal="";
+  if(fields.includes("swing")){
+    const opts=rooms.map(r=>[`in:${r.id}`, `Into ${r.name}`]);
+    if(rooms.length===1) opts.push([`out:${rooms[0].id}`, `Outward (away from ${rooms[0].name})`]);
+    swingVal = `${o.swing==="out"?"out":"in"}:${o.room||""}`;
+    if(!opts.some(([v])=>v===swingVal)) opts.unshift([swingVal, o.swing==="out" ? "Outward" : "Inward"]);
+    swingOpts=opts.map(([v,l])=>`<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  }
+  body.innerHTML = `
+    <div class="kicker">${esc(openingLabel(o.type).toUpperCase())} · ${esc(o.id)}</div>
+    <span class="field-label">On wall</span>
+    <div class="muted">${esc(wallIdForKey(key))} · ${fmtFt(fr.len)} long</div>
+    ${open ? `<p class="muted" style="margin-top:8px">This wall is marked open (no wall), so the opening is hidden. Uncheck Open on the wall to show and edit it again.</p>` : `
+    <div class="pair" style="margin-top:10px">
+      <div><span class="field-label">Center from ${esc(fr.lo)}</span><input type="text" id="opAlong" value="${fmtFt(o.along)}"></div>
+      <div><span class="field-label">Width</span><input type="text" id="opWidth" value="${fmtFt(o.width)}"></div>
+    </div>
+    <div class="btngrid" style="margin-top:8px"><button class="btn primary" id="opApply">Apply</button></div>
+    ${disp.clamped?`<p class="muted" style="margin-top:6px">The wall is currently shorter than this opening's stored position, so it's drawn clamped (${fmtFt(disp.width)} wide at ${fmtFt(disp.along)}). Lengthen the wall to restore it.</p>`:""}
+    ${fields.includes("swing")?`<span class="field-label" style="margin-top:10px;display:block">Swing</span><select id="opSwing">${swingOpts}</select>`:""}
+    ${fields.includes("hand")?`<span class="field-label" style="margin-top:10px;display:block">${o.type==="door"?"Hinge side (seen from the swing side)":"Front panel"}</span>
+      <select id="opHand"><option value="left">Left</option><option value="right">Right</option></select>`:""}`}
+    <div class="btngrid" style="margin-top:10px">
+      ${w?'<button class="btn" id="opWall">Select wall</button>':""}
+      <button class="btn danger" id="opDel">Delete</button>
+    </div>`;
+  if(!open){
+    const apply=()=>{
+      // an untouched field keeps the exact stored value (the inputs show it
+      // rounded to the inch, which would otherwise nudge it on every Apply)
+      const av=document.getElementById("opAlong").value, wv=document.getElementById("opWidth").value;
+      const al = av===fmtFt(o.along) ? o.along : parseLen(av), wd = wv===fmtFt(o.width) ? o.width : parseLen(wv);
+      if(isNaN(al) || !isValidOpeningWidth(wd)){ setReadout("Opening",`enter an offset and a width of ${fmtFt(OPENING_MIN_WIDTH)} to ${fmtFt(OPENING_MAX_WIDTH)}`); return; }
+      const slot=nearestOpeningSlot(openingsAt(f,key), al, wd, fr.len, o.id);
+      if(slot==null){ setReadout("Opening",`a ${fmtFt(wd)} opening doesn't fit on this wall next to its other openings`); return; }
+      if(Math.abs(slot-o.along)<1e-9 && Math.abs(wd-o.width)<1e-9){ renderInspector(); return; }   // no-op: no undo entry
+      commit(()=>{ updateOpening(f,key,o.id,{along:al, width:wd}); });
+      if(Math.abs(slot-al)>1e-6) setReadout("Opening","moved to the nearest position that fits");
+    };
+    document.getElementById("opApply").onclick=apply;
+    ["opAlong","opWidth"].forEach(id=>{ document.getElementById(id).onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); apply(); } }; });
+    if(fields.includes("swing")){
+      const s=document.getElementById("opSwing"); s.value=swingVal;
+      s.onchange=()=>{ const [sw,room]=s.value.split(":"); commit(()=>{ updateOpening(f,key,o.id,{swing:sw, room}); }); };
+    }
+    if(fields.includes("hand")){
+      const h=document.getElementById("opHand"); h.value=o.hand||"left";
+      h.onchange=()=>{ commit(()=>{ updateOpening(f,key,o.id,{hand:h.value}); }); };
+    }
+  }
+  if(w) document.getElementById("opWall").onclick=()=>selectWall(w.id);
+  document.getElementById("opDel").onclick=()=>{ commit(()=>{ removeOpening(f,key,o.id); sel=w?{type:"wall",id:w.id}:{type:null,id:null}; }); };
+  setReadout(openingLabel(o.type), `${fmtFt(o.width)} wide · ${fmtFt(o.along-o.width/2)} · ${fmtFt(fr.len-o.along-o.width/2)} to the wall ends`);
 }
 
 function renderPointInspector(f, body){
@@ -297,6 +411,10 @@ function nudgeRoom(r, dir){
   commit(()=>{ ids.forEach(id=>{const p=ptOf(f,id); p.x+=dx; p.y+=dy;}); });
 }
 
+/* Wall length edit. Deliberately does NOT touch the wall's openings: their
+   stored `along`/`width` stay as they are and rendering clamps what it draws
+   to the new length (displayedOpening in js/model.js), so shortening a wall
+   and lengthening it again puts every opening back exactly where it was. */
 function applyLength(w){
   const f=activeLevel();
   const val=parseLen(document.getElementById("lenInput").value);
