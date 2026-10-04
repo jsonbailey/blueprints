@@ -118,6 +118,16 @@ stop the flood-fill from propagating through a point that belongs to a
 locked room (the dragged room's cluster should stop at a locked neighbor's
 shared wall, not drag it along or silently skip it).
 
+**Shipped** as `connectedRoomPoints(f, roomId)` in `js/model.js` →
+`{ids, roomIds, pinnedIds}`, used by both `startDragRoom` (js/tools.js) and
+`nudgeRoom`. Locked-boundary decision: a point belonging to any locked room
+is *pinned* — excluded from the move-set and never flooded through. So the
+locked room never moves or distorts; if an unlocked room is still welded to
+it (rare: locking detaches first, but loaded files can contain it), that
+room's shared corners stay put and it stretches there, and the drag readout
+says "pinned by locked room". `nudgeRoom` on a locked room is now a no-op
+(it previously moved the locked room's points).
+
 **Cross-reference for item 5 (object placement):** once this lands, a
 whole-room drag can move *multiple* rooms in one gesture. Item 5's "free
 objects carry along by the room's `{dx,dy}` on `roomDrag`/`nudgeRoom`" rule

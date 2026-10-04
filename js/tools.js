@@ -52,11 +52,15 @@ function startDragRoom(e,roomId){
   const f=activeLevel(); const room=f.rooms.find(r=>r.id===roomId); if(!room) return;
   selectRoom(roomId);
   if(room.locked){ setReadout("Locked","unlock this room to move it"); return; }
-  // Move every corner of the room by the same offset. Shared corners carry
-  // their neighbours along, so adjacent rooms stretch to stay attached.
-  const ids=[...new Set(room.loop)];
-  const starts=ids.map(id=>{const p=ptOf(f,id);return {id,x:p.x,y:p.y};});
-  interaction={kind:"room", roomId, starts, ref:{x:starts[0].x,y:starts[0].y},
+  // Translate the whole welded cluster (every room transitively sharing a
+  // corner with this one) by the same offset, so neighbours keep their shape
+  // instead of stretching. Locked rooms bound the cluster — see
+  // connectedRoomPoints in js/model.js.
+  const cluster=connectedRoomPoints(f, roomId);
+  const starts=cluster.ids.map(id=>{const p=ptOf(f,id);return {id,x:p.x,y:p.y};});
+  if(!starts.length){ setReadout("Locked","every corner of this room is pinned by a locked room"); return; }
+  interaction={kind:"room", roomId, starts, roomIds:cluster.roomIds, pinned:cluster.pinnedIds.length>0,
+    ref:{x:starts[0].x,y:starts[0].y},
     startClient:{x:e.clientX,y:e.clientY},
     startWorld:eventWorld(e),
     preState:captureState(), committed:false, active:false };
@@ -169,7 +173,8 @@ const interactionHandlers = {
       }
       it.starts.forEach(s=>{ const p=ptOf(f,s.id); p.x=s.x+dx; p.y=s.y+dy; });
       render();
-      setReadout(snapViz&&(snapViz.targetId||snapViz.gx!=null||snapViz.gy!=null)?"Room → connect":"Room moved", `${fmtFt(dx)} · ${fmtFt(dy)}`);
+      setReadout(snapViz&&(snapViz.targetId||snapViz.gx!=null||snapViz.gy!=null)?"Room → connect":"Room moved",
+        `${fmtFt(dx)} · ${fmtFt(dy)}${it.roomIds.length>1?` · ${it.roomIds.length} connected rooms`:""}${it.pinned?" · pinned by locked room":""}`);
     },
     end(it){
       if(it.active && opts.snapConnect){

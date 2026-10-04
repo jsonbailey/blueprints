@@ -136,6 +136,49 @@ function divideWall(f, w){
 /* ---- locking ---- */
 function lockedPointIds(f){ const s=new Set(); f.rooms.forEach(r=>{ if(r.locked) r.loop.forEach(id=>s.add(id)); }); return s; }
 
+/* The set of points a whole-room translate (room drag / nudge) must move so
+   no welded neighbour gets distorted: flood-fill across every room in the
+   level that transitively shares a point id with `startRoomId` (a chain
+   A-B-C moves together even though A never touches C), and return the union
+   of their points.
+
+   Locked rooms are a hard boundary. A point belonging to any locked room is
+   never moved and never propagated through — so a locked room is neither
+   dragged along nor distorted, and rooms that touch the cluster only via a
+   locked room's corner stay put. Such points are reported in `pinnedIds`:
+   they stay fixed while the rest of the cluster moves, so an unlocked room
+   welded to a locked one stretches at that shared corner (the locked room's
+   geometry wins). In practice this is rare — locking a room detaches it
+   first — but loaded files or welds made before locking can still produce it.
+
+   A locked start room yields an empty result (callers already refuse to move
+   it). Returns {ids, roomIds, pinnedIds} — `roomIds` is every room in the
+   moved cluster (item 5's free-object carry-along needs it per room). */
+function connectedRoomPoints(f, startRoomId){
+  const start=f.rooms.find(r=>r.id===startRoomId);
+  const out={ids:[], roomIds:[], pinnedIds:[]};
+  if(!start || start.locked) return out;
+  const locked=lockedPointIds(f);
+  const roomsByPt=new Map();
+  f.rooms.forEach(r=>{ if(r.locked) return; new Set(r.loop).forEach(id=>{
+    if(!roomsByPt.has(id)) roomsByPt.set(id,[]); roomsByPt.get(id).push(r); }); });
+  const seenRooms=new Set([start.id]), ids=new Set(), pinned=new Set();
+  const queue=[start];
+  while(queue.length){
+    const r=queue.shift(); out.roomIds.push(r.id);
+    for(const id of r.loop){
+      if(locked.has(id)){ pinned.add(id); continue; }   // boundary: don't move, don't cross
+      if(ids.has(id)) continue;
+      ids.add(id);
+      for(const n of roomsByPt.get(id)||[]){
+        if(!seenRooms.has(n.id)){ seenRooms.add(n.id); queue.push(n); }
+      }
+    }
+  }
+  out.ids=[...ids]; out.pinnedIds=[...pinned];
+  return out;
+}
+
 /* Insert a point at (x,y) on the edge (a,b) for every room using that edge. */
 function insertPointOnWall(f,a,b,x,y){
   const mid={id:"pt"+(_pid++), x:snapInch(x), y:snapInch(y)}; let inserted=false;
