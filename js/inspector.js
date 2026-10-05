@@ -476,6 +476,9 @@ function deletePoint(f, id){
   });
   remapWallRefs(f, {kind:"merge", pairs});
   gcPoints(f); deriveWalls(f);
+  // the caller re-renders via clearSel(), not markDirty(), so run the
+  // anchored-object pass here (see markDirty in js/state.js)
+  resolveObjects(f);
   return true;
 }
 
