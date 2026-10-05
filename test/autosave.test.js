@@ -23,8 +23,12 @@ test("fresh app (no prior blueprints:* keys): starts with freshData()-equivalent
   assert.equal(idx[0].name, "Untitled Plan");
   assert.equal(typeof idx[0].updatedAt, "number");
 
-  // No project blob yet — that's only written once an autosave actually runs.
-  assert.equal(ctx.localStorage.getItem("blueprints:project:" + currentId), null);
+  // loadApp() itself consumes the one startup-triggered autosave timer (see
+  // harness.js), so the blob already reflects the freshly-minted project —
+  // a harmless, idempotent write of exactly the data just loaded.
+  const blob = JSON.parse(ctx.localStorage.getItem("blueprints:project:" + currentId));
+  assert.deepEqual(blob.levels.map(l => l.name), ["Level 1"]);
+  assert.equal(blob.name, "Untitled Plan");
 
   const info = run(() => ({ levelNames: data.levels.map(l => l.name), id: getCurrentProjectId() }));
   assert.deepEqual(info.levelNames, ["Level 1"]);
@@ -42,8 +46,11 @@ test("autosave: a commit()-driven mutation writes nothing until the debounce ela
   const updatedAtBefore = JSON.parse(ctx.localStorage.getItem("blueprints:projects"))[0].updatedAt;
 
   run(() => { addLevel(); });   // a commit()-driven mutation
-  assert.equal(ctx.localStorage.getItem("blueprints:project:" + id), null,
-    "must not write before the debounce elapses");
+  // loadApp() already consumed the startup timer (see harness.js), so a
+  // blob exists, but it must still reflect the PRE-mutation state until this
+  // mutation's own debounce elapses.
+  const preFlush = JSON.parse(ctx.localStorage.getItem("blueprints:project:" + id));
+  assert.equal(preFlush.levels.length, 1, "must not reflect the mutation before the debounce elapses");
 
   run(() => { flushAutosave(); });
   const blob = JSON.parse(ctx.localStorage.getItem("blueprints:project:" + id));
@@ -74,8 +81,11 @@ test("autosave: renaming the project (setProjectName) triggers an eventual autos
   const id = ctx.localStorage.getItem("blueprints:currentProjectId");
 
   run(() => { setProjectName("My House"); });
-  assert.equal(ctx.localStorage.getItem("blueprints:project:" + id), null,
-    "must not write before the debounce elapses");
+  // loadApp() already consumed the startup timer (see harness.js), so a
+  // blob exists, but it must still carry the PRE-rename name until this
+  // rename's own debounce elapses.
+  const preFlush = JSON.parse(ctx.localStorage.getItem("blueprints:project:" + id));
+  assert.equal(preFlush.name, "Untitled Plan", "must not reflect the rename before the debounce elapses");
 
   run(() => { flushAutosave(); });
   const blob = JSON.parse(ctx.localStorage.getItem("blueprints:project:" + id));
