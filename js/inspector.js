@@ -376,11 +376,36 @@ function startRenameRoom(room, nameEl, opts){
   return true;
 }
 
+/* Rooms adjacent to `room` — sharing at least one wall — found by walking
+   room's own loop edges and asking wallSides (ARCHITECTURE.md item 3) which
+   rooms run along each edge; wallSides takes a plain {a,b}, not necessarily
+   a real f.walls entry, so this works directly off the loop. Deduped, in
+   first-encountered order. */
+function adjacentRooms(f, room){
+  const seen=new Set([room.id]), out=[];
+  const L=room.loop;
+  for(let i=0;i<L.length;i++){
+    const a=L[i], b=L[(i+1)%L.length]; if(a===b) continue;
+    wallSides(f, {a,b}).forEach(s=>{
+      if(!seen.has(s.room.id)){ seen.add(s.room.id); out.push(s.room); }
+    });
+  }
+  return out;
+}
+/* Remembers which adjacent room the "Join" picker has selected, across
+   re-renders of the room inspector — same pattern as `cornerRoom` above for
+   the corner-angle room picker. Reset whenever it's no longer a valid
+   candidate (room deleted, or no longer adjacent after a geometry edit). */
+let _joinTargetId = null;
+
 function renderRoomInspector(f, body){
   const r=f.rooms.find(x=>x.id===sel.id); if(!r){clearSel();return;}
   const area=interiorArea(f,r);   // inside the walls' interior faces
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   r.loop.forEach(id=>{const p=ptOf(f,id);minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);});
+  const adj = adjacentRooms(f, r);
+  if(!adj.find(x=>x.id===_joinTargetId)) _joinTargetId = adj.length ? adj[0].id : null;
+  const joinOptsHtml = adj.map(x=>`<option value="${x.id}" ${x.id===_joinTargetId?"selected":""}>${esc(x.name)}</option>`).join("");
   body.innerHTML = `
     <div class="kicker">ROOM</div>
     <span class="field-label">Room name</span>
@@ -404,6 +429,14 @@ function renderRoomInspector(f, body){
     </div>
     <div class="btngrid" style="margin-top:8px">
       <button class="btn" id="cutRoomBtn">Cut overlaps from others</button>
+    </div>
+    <div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
+      <span class="field-label">Join with adjacent room</span>
+      ${adj.length?`
+      <select id="joinTargetSel" style="margin-bottom:8px">${joinOptsHtml}</select>
+      <div class="btngrid"><button class="btn" id="joinRoomBtn">Join</button></div>
+      <p class="muted" style="margin-top:8px">Merges this room and the selected one into a single room (keeps this room's name). The wall between them is removed, along with any door/window on it.</p>
+      `:`<p class="muted">No adjacent room shares a wall with this one.</p>`}
     </div>
     <label class="toggle row" style="margin-top:10px"><input type="checkbox" id="lockRoom" ${r.locked?"checked":""}><span>Lock geometry</span></label>
     <p class="muted" style="margin-top:4px">Cut trims this room's shape out of any room it overlaps. Lock freezes this room so moving a connected room won't reshape it.</p>`;
@@ -437,6 +470,22 @@ function renderRoomInspector(f, body){
     else if(res.dropped){ setTimeout(()=>alert("Cut done. A room split into pieces or got a hole; only the largest piece was kept — you may want to redraw that one."),0); }
     markDirty();
   };
+  if(adj.length){
+    const joinSel=document.getElementById("joinTargetSel");
+    joinSel.onchange=e=>{ _joinTargetId=e.target.value; };
+    document.getElementById("joinRoomBtn").onclick=()=>{
+      const other=f.rooms.find(x=>x.id===_joinTargetId); if(!other) return;
+      // Not a plain commit(): on refusal (rooms don't actually share a full
+      // edge, or either is locked) nothing should land on the undo stack —
+      // same one-off exception cutRoomBtn's handler above already makes, for
+      // the same reason.
+      snapshot();
+      const res=joinRooms(f, r, other);
+      if(!res.ok){ history.pop(); alert("Can't join: "+res.reason); return; }
+      sel={type:"room", id:r.id};   // select the surviving merged room
+      markDirty();
+    };
+  }
   document.getElementById("lockRoom").onchange=(ev)=>{
     commit(()=>{
       if(ev.target.checked){ detachRoom(f,r); r.locked=true; }   // detach so it shares nothing, then freeze
