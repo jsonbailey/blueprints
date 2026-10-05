@@ -36,10 +36,75 @@ function pastThreshold(d,e){
   return false;
 }
 
+/* ---------- click-to-cycle through overlapping walls / corners ----------
+   Every wall band and corner handle has its own pointerdown bound to its own
+   id (js/render.js), and the browser always delivers a press to whichever
+   element is painted on top — so with two walls (or two unwelded points)
+   exactly on top of each other, the one underneath could never be clicked.
+   cycleTarget() resolves which id a press on a wall/corner actually means:
+
+   - First press at a spot (or any press that isn't a repeat): the element
+     the browser hit, `nativeId` — unchanged from before this feature. That
+     IS the topmost candidate wherever the geometry truly overlaps (it's
+     what's painted on top there); trusting it rather than recomputing also
+     keeps clip-path-trimmed bands and near-corner clicks behaving exactly as
+     they always have.
+   - Repeat press: within DRAG_PX (client px) of the previous wall/corner
+     press, same kind (wall after wall / point after point), and the current
+     selection is one of this press's candidates → the NEXT candidate in
+     top-to-bottom order (wallsNear/pointsNear, js/model.js), wrapping back
+     to the top after the bottom one. One candidate → it simply stays
+     selected.
+   Anything else in between (a press elsewhere, a pan that clears the
+   selection, selecting a room) breaks the repeat condition by itself, so
+   the next press at the original spot starts over from the top.
+
+   Candidates:
+   - walls: every wall whose drawn hit target would contain the press — the
+     centerline within half the band as render() draws it (real thickness,
+     2.6px minimum; an open edge's hit line is 10px wide) plus
+     CYCLE_SLOP_PX. Deliberately NOT the wider SNAP_PX: near a corner that
+     radius would make the perpendicular neighbour a candidate, and a second
+     press to drag the wall you just selected would grab its neighbour.
+   - points: every distinct point id within MERGE_TOL of the pressed
+     handle's own coordinates (not the cursor — handles are several px wide,
+     MERGE_TOL is under a pixel). A welded corner is one id → one candidate.
+   If the native id isn't among the computed candidates (e.g. a press on a
+   wall's square end cap, outside the centerline radius), it is used as-is. */
+const CYCLE_SLOP_PX = 2;     // px of slack around a wall's drawn band for cycle candidates
+let cycleLast = null;        // {kind:"wall"|"point", x, y} — previous wall/corner press, client px
+
+function wallHitTol(f, w){
+  const half = isOpenWall(f,w) ? 5 : Math.max(2.6, effThickness(f,w)*view.scale)/2;
+  return (half + CYCLE_SLOP_PX)/view.scale;   // → world units
+}
+/* Candidate ids for a press, topmost first (see above). */
+function cycleCandidates(kind, nativeId, e){
+  const f=activeLevel();
+  if(kind==="wall"){
+    const [wx,wy]=eventWorld(e);
+    return wallsNear(f, wx, wy, w=>wallHitTol(f,w)).map(w=>w.id);
+  }
+  const p=ptOf(f,nativeId);
+  return p ? pointsNear(f, p.x, p.y).map(q=>q.id) : [];
+}
+function cycleTarget(kind, nativeId, e){
+  let cands=cycleCandidates(kind, nativeId, e);
+  if(!cands.includes(nativeId)) cands=[nativeId];
+  const prev=cycleLast;
+  cycleLast={kind, x:e.clientX, y:e.clientY};
+  const repeat = prev && prev.kind===kind
+    && Math.hypot(e.clientX-prev.x, e.clientY-prev.y) <= DRAG_PX
+    && sel.type===kind && cands.includes(sel.id);
+  if(!repeat) return nativeId;
+  return cands[(cands.indexOf(sel.id)+1) % cands.length];
+}
+
 /* ---------- gesture entry points (wired from js/render.js / js/app.js) ---------- */
 
 function startDragPoint(e,id){
   e.stopPropagation();
+  id=cycleTarget("point", id, e);   // may differ from the pressed element mid-cycle
   const f=activeLevel(); const p=ptOf(f,id);
   selectPoint(id);
   if(lockedPointIds(f).has(id)){ setReadout("Locked","corner belongs to a locked room"); return; }
@@ -111,6 +176,7 @@ function startDragObject(e,id){
 
 function startDragWall(e,id){
   e.stopPropagation();
+  id=cycleTarget("wall", id, e);    // may differ from the pressed element mid-cycle
   const f=activeLevel(); const w=wallById(f,id); if(!w) return;
   selectWall(id);
   const locked=lockedPointIds(f);
