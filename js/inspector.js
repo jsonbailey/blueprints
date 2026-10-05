@@ -479,47 +479,132 @@ function setWallCenterlineLength(f, w, targetCenterline){
   else               { a.x=b.x-dx*targetCenterline; a.y=b.y-dy*targetCenterline; }
 }
 
+/* ---------- inside-length solve (bisection) ----------
+   In "inside" mode, typing a length means "make THIS ROOM's interior clear
+   length along this wall equal this value" — not the centerline length.
+
+   HISTORY: an earlier version of this converted the typed value via a single
+   linear delta (delta = currentCenterline - currentInside, target =
+   typed + delta), reasoning that sliding the endpoint along the wall's own
+   direction leaves both end corners' miter geometry untouched. That
+   reasoning is only true when the moving endpoint is a non-turning
+   (collinear, same-thickness) continuation of the wall — e.g. one half of a
+   divided wall. For a GENUINE turning corner it's wrong: the OTHER wall
+   sharing that endpoint has its own far end fixed in space, so sliding the
+   shared endpoint along this wall's direction rotates that other wall,
+   which is a nonlinear effect on the interior-corner intersection. Verified
+   numerically: extending one wall of a plain rectangle made the gap drift
+   (0.5 -> 0.57 -> 0.70 ft across repeated edits) instead of staying put —
+   a real, non-negligible error for a feature whose point is precision.
+
+   FIX: don't derive a formula for the nonlinear case — search for the
+   answer directly against the real, already-correct forward computation
+   (wallSides/roomInterior). solveCenterlineForInside moves the endpoint to
+   a candidate centerline length the exact same way setWallCenterlineLength
+   always has, re-measures the room's actual interior length, and narrows
+   in by bisection. This assumes interior length is monotonic in centerline
+   length (true for any sane, non-self-intersecting room shape) — rather
+   than assuming it blindly, a wide log-spaced sample pass both hunts for a
+   bracket containing the target AND checks every consecutive sample moves
+   the same direction; a monotonicity violation (or no bracket found at all)
+   makes it bail out (return null) instead of returning a wrong answer. */
+const LENGTH_SOLVE_TOL = 1e-7;      // ft — tighter than fmtFt's inch rounding
+const LENGTH_SOLVE_SAMPLES = 24;    // log-spaced bracket/monotonicity probes
+const LENGTH_SOLVE_ITERS = 60;      // bisection passes once bracketed (far more than needed for 1e-7 ft)
+
+/* Solve for the centerline length of wall `w` that makes `roomId`'s interior
+   length along it equal `targetInside`, given the wall's current centerline
+   length `currentCenterline`. Mutates the wall's endpoints during the search
+   (always resetting to the ORIGINAL geometry before each trial, so floating-
+   point error can't accumulate across trials) and always restores them
+   before returning — the caller performs the one real mutation (and the one
+   commit()) with the solved value. Returns the solved length, or null if no
+   bracket could be found or the sampled relationship isn't monotonic. */
+function solveCenterlineForInside(f, w, roomId, targetInside, currentCenterline){
+  const a=ptOf(f,w.a), b=ptOf(f,w.b);
+  const a0={x:a.x,y:a.y}, b0={x:b.x,y:b.y};
+  function insideAt(L){
+    if(!(L>1e-6)) return null;
+    a.x=a0.x; a.y=a0.y; b.x=b0.x; b.y=b0.y;      // always start from the ORIGINAL geometry
+    setWallCenterlineLength(f, w, L);
+    const s=wallSides(f, w).find(x=>x.room.id===roomId);
+    return (s && s.side && s.side.len>1e-9) ? s.side.len : null;
+  }
+  function restore(){ a.x=a0.x; a.y=a0.y; b.x=b0.x; b.y=b0.y; }
+
+  const base=Math.max(currentCenterline, 1);
+  const Ls=[];
+  for(let i=-LENGTH_SOLVE_SAMPLES/2; i<=LENGTH_SOLVE_SAMPLES/2; i++){
+    const L=base*Math.pow(1.6, i);
+    if(L>1e-6) Ls.push(L);
+  }
+  const samples=[];
+  for(const L of Ls){ const v=insideAt(L); if(v!=null) samples.push({L, v}); }
+  if(samples.length<2){ restore(); return null; }
+
+  let dir=0;
+  for(let i=1;i<samples.length;i++){
+    const d=samples[i].v-samples[i-1].v;
+    if(Math.abs(d)<1e-9) continue;
+    const s=d>0?1:-1;
+    if(dir===0) dir=s;
+    else if(s!==dir){ restore(); return null; }        // not monotonic over the sampled range — bail
+  }
+  if(dir===0){ restore(); return null; }                // flat everywhere — nothing to search for
+
+  let lo=null, hi=null;
+  for(let i=0;i<samples.length-1;i++){
+    const A=samples[i], B=samples[i+1];
+    const within = dir>0 ? (A.v<=targetInside && targetInside<=B.v) : (A.v>=targetInside && targetInside>=B.v);
+    if(within){ lo=A; hi=B; break; }
+  }
+  if(!lo){ restore(); return null; }                    // target is outside the sampled range — don't extrapolate
+
+  let loL=lo.L, hiL=hi.L;
+  for(let i=0;i<LENGTH_SOLVE_ITERS;i++){
+    const midL=(loL+hiL)/2;
+    const v=insideAt(midL);
+    if(v==null){ restore(); return null; }
+    if(Math.abs(v-targetInside)<=LENGTH_SOLVE_TOL){ restore(); return midL; }
+    const midIsHigh = dir>0 ? v>targetInside : v<targetInside;
+    if(midIsHigh) hiL=midL; else loL=midL;
+  }
+  restore();
+  return (loL+hiL)/2;
+}
+
 /* Wall length edit. Deliberately does NOT touch the wall's openings: their
    stored `along`/`width` stay as they are and rendering clamps what it draws
    to the new length (displayedOpening in js/model.js), so shortening a wall
    and lengthening it again puts every opening back exactly where it was.
 
-   In "inside" mode (opts.lengthMode), the typed value is the DESIRED
-   interior clear length for the room picked by wallLengthState/lengthRoom,
-   not the centerline length — convert it via a delta computed fresh, right
-   here, from the wall's CURRENT (pre-edit) geometry:
-       delta = currentCenterlineLength - currentInsideLengthForSelectedRoom
-       targetCenterlineLength = typedInsideValue + delta
-   Why this is exact, not an approximation: setWallCenterlineLength moves
-   only the picked endpoint, sliding it along the wall's OWN existing
-   direction — it never touches the room's other corners, and the corner at
-   the end that does NOT move is obviously unaffected since that point never
-   moves. At the end that DOES move, the wall's own offset (interior-face)
-   line is anchored by the FIXED endpoint and the (preserved) direction, so
-   it doesn't move either; what can move is the interior corner where it
-   meets the NEXT wall's offset line. That intersection stays on this fixed
-   offset line, slid by exactly the same amount the endpoint is slid,
-   whenever the next wall's own offset line doesn't rotate as the endpoint
-   moves along the shared wall's direction — true whenever that end isn't a
-   genuine turn for the point of view of the room picked (e.g. the far side
-   of a divided/subdivided straight run, or most real wall-length edits in
-   practice). The gap between centerline length and this room's interior
-   length at each end is therefore unchanged by the edit, so the delta
-   computed before the edit remains valid after it, including through a
-   second, third, ... edit in a row, since each call recomputes it fresh
-   from the CURRENT geometry rather than reusing a stale value. */
+   In "inside" mode, the typed value is the room's desired interior clear
+   length; solveCenterlineForInside (above) finds the exact centerline
+   length that produces it by bisection against the real geometry. If that
+   search can't bracket/converge (a pathological, non-monotonic shape —
+   should be very rare for a real floor plan), fall back to the simple
+   linear delta as a LAST RESORT: it's only approximate off a genuine
+   turning corner, so the readout says so rather than silently landing
+   close-but-not-exact with no indication. */
 function applyLength(w){
   const f=activeLevel();
   const val=parseLen(document.getElementById("lenInput").value);
   if(isNaN(val)||val<=0) return;
   const ls=wallLengthState(f, w);   // fresh, pre-edit state — never cached
-  let target = val;
+  let target = val, approximate=false;
   if(ls.mode==="inside" && ls.cur){
-    const delta = ls.centerline - ls.cur.side.len;
-    target = val + delta;
+    const solved = solveCenterlineForInside(f, w, ls.cur.room.id, val, ls.centerline);
+    if(solved!=null && solved>0){
+      target = solved;
+    } else {
+      const delta = ls.centerline - ls.cur.side.len;
+      target = val + delta;
+      approximate = true;
+    }
   }
   if(target<=0) return;
   commit(()=>{ setWallCenterlineLength(f, w, target); });
+  if(approximate) setReadout("Wall", "approximate: this wall's interior geometry couldn't be solved exactly here");
 }
 
 /* Delete a point. Rooms that still have >=3 corners afterward just lose the

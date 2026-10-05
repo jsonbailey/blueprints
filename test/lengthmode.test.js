@@ -8,11 +8,11 @@ const { loadApp } = require("./harness");
    named roadmap item) and js/state.js's comment on `opts`. Covers:
      - the wall inspector's Length bigval/input (wallLengthState, applyLength
        in js/inspector.js)
-     - the delta-based inverse (typed inside length -> target centerline)
-       staying exact across repeated edits, for a wall whose "moving" end is
-       NOT a genuine turn from the targeted room's point of view (see the
-       long comment on applyLength for why that's the condition that makes
-       the delta exact, not approximate)
+     - the bisection-based inverse (typed inside length -> target centerline,
+       solveCenterlineForInside) landing within LENGTH_SOLVE_TOL of the typed
+       target across repeated edits, including at a GENUINE turning corner —
+       where an earlier linear-delta version was only approximate (verified
+       to drift 0.5 -> 0.57 -> 0.70 ft across edits before the fix)
      - a shared wall's two rooms moving together, not independently
      - centerline mode being a pure regression of the original behavior */
 
@@ -90,6 +90,43 @@ test("inside mode: the delta stays exact through a SECOND edit in a row", () => 
   near(r.mid1, 9, "first edit still exact");
   near(r.after2.inside, 6.5, "second edit also exact — the delta recomputed fresh still holds");
   near(r.after2.centerline, 6.75, "centerline = 6.5 + the same 0.25 delta");
+});
+
+/* The actual scenario that exposed the linear-delta bug: a wall whose
+   MOVING end is a genuine 90° turn (not a divided/collinear continuation).
+   Extending wall AB by sliding B rotates the perpendicular wall BC (C stays
+   fixed in space), which is a nonlinear effect on the interior-corner
+   intersection — a plain "delta = centerline - inside, add it back" came out
+   wrong and kept drifting further wrong across repeated edits (measured:
+   0.5 -> 0.57 -> 0.70 ft gap instead of a constant 0.5 ft). This is the
+   regression test for solveCenterlineForInside fixing that by bisection
+   against the real geometry instead of a formula. */
+test("inside mode at a GENUINE turning corner: bisection lands on the typed target exactly (the case where the old linear delta drifted)", () => {
+  const { run } = loadApp();
+  const r = vmRun(run, `
+    // Plain (undivided) rectangle: A(0,0) B(10,0) C(10,8) D(0,8), thickness
+    // 0.5 (half 0.25) on every wall. Edit wall AB, moving its B end — which
+    // is also the near end of wall BC, a real 90 degree turn.
+    const f = makeLevel("T", []);
+    f.points = [{id:"A",x:0,y:0},{id:"B",x:10,y:0},{id:"C",x:10,y:8},{id:"D",x:0,y:8}];
+    f.rooms = [{id:"R", name:"R", kind:"room", loop:["A","B","C","D"]}];
+    f.defaultThickness = 0.5;
+    indexLevel(f);
+    data.levels=[f]; data.activeLevelId=f.id;
+    const wAB = f.walls.find(w=>wallKeyOf(w)===wallKey("A","B"));
+    movingEnd = "b";   // B moves; A (and the far end of BC's neighbour, D) stays fixed
+    function insideLen(){ return wallSides(f, wAB).find(s=>s.side).side.len; }
+    const before = { centerline: Math.hypot(ptOf(f,"B").x-ptOf(f,"A").x, ptOf(f,"B").y-ptOf(f,"A").y), inside: insideLen() };
+    setLenInside(f, wAB, "inside", "11.43");   // a value the OLD linear delta could not hit exactly here
+    const after1 = { centerline: Math.hypot(ptOf(f,"B").x-ptOf(f,"A").x, ptOf(f,"B").y-ptOf(f,"A").y), inside: insideLen() };
+    setLenInside(f, wAB, "inside", "14.3");    // second edit in a row — must still be exact, not drifting further
+    const after2 = { centerline: Math.hypot(ptOf(f,"B").x-ptOf(f,"A").x, ptOf(f,"B").y-ptOf(f,"A").y), inside: insideLen() };
+    return {before, after1, after2};
+  `);
+  near(r.before.centerline, 10, "sanity: initial centerline");
+  near(r.before.inside, 9.5, "sanity: initial inside length (90 degree corner, cutback 0.25 at each end)");
+  near(r.after1.inside, 11.43, "bisection hits the typed target exactly at a real turning corner");
+  near(r.after2.inside, 14.3, "a second edit in a row is still exact — no drift");
 });
 
 test("inside mode on a shared wall: the targeted room's length hits exactly; the other room's shifts by the same raw delta, not independently", () => {
