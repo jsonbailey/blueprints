@@ -23,7 +23,7 @@
    top-level bindings must already exist by then.
    ========================================================================= */
 
-let interaction = null;  // {kind:"point"|"wall"|"room"|"opening"|"object"|"pan", ...} or null
+let interaction = null;  // {kind:"point"|"wall"|"room"|"opening"|"object"|"anchoredObject"|"pickWall"|"pan"|"rect"|"poly", ...} or null
 let snapViz = null;      // transient drag-time snap feedback {targetId?, edge?, gx?, gy?}
 const DRAG_PX = 3;       // movement before a press counts as a drag (vs. a click)
 const SNAP_PX = 12;      // pixel radius for connection/alignment snapping
@@ -63,7 +63,7 @@ function startDragRoom(e,roomId){
   const starts=cluster.ids.map(id=>{const p=ptOf(f,id);return {id,x:p.x,y:p.y};});
   if(!starts.length){ setReadout("Locked","every corner of this room is pinned by a locked room"); return; }
   // Carry along every FREE object (anchor==null — anchored objects follow
-  // their wall via resolveObjects(), a later task, not this translate) whose
+  // their wall via resolveObjects() instead, never this translate) whose
   // roomId is anywhere in the moved cluster, not just the room directly
   // dragged (ARCHITECTURE.md item 5: "carry a free object along whenever its
   // roomId is in that cluster's roomIds"). Starting positions are captured
@@ -89,6 +89,20 @@ function startDragObject(e,id){
   e.stopPropagation();
   const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===id); if(!o) return;
   selectObject(id);
+  if(o.anchor){
+    // An anchored object drags in its wall's frame (along/gap), never freely
+    // — see the `anchoredObject` kind. The frame and inward normal are
+    // captured once: topology can't change mid-drag.
+    const face=anchorFace(f, o.roomId, o.anchor.wall);
+    if(face && face.side){
+      interaction={kind:"anchoredObject", id, fr:face.fr, n:face.side.n,
+        startAlong:o.anchor.along, startGap:o.anchor.gap,
+        startClient:{x:e.clientX,y:e.clientY}, startWorld:eventWorld(e),
+        preState:captureState(), committed:false, active:false};
+      svg.setPointerCapture(e.pointerId);
+    }
+    return;
+  }
   interaction={kind:"object", id, startClient:{x:e.clientX,y:e.clientY},
     startWorld:eventWorld(e), startPt:{x:o.x,y:o.y},
     preState:captureState(), committed:false, active:false};
@@ -156,6 +170,7 @@ const interactionHandlers = {
         snapViz={targetId:s.targetId, edge:s.edge, gx:s.gx, gy:s.gy};
       }
       p.x=nx; p.y=ny;
+      resolveObjects(f);   // anchored objects follow their wall live
       render();
       setReadout((it.snapTarget||it.snapEdge)?"Corner → connect":"Corner", `${fmtFt(p.x)} · ${fmtFt(p.y)}`);
     },
@@ -188,6 +203,7 @@ const interactionHandlers = {
         delta = applySnap(it.aStart.x + (wx-it.startWorld[0])) - it.aStart.x;
         a.x=it.aStart.x+delta; b.x=it.bStart.x+delta;
       }
+      resolveObjects(f);   // anchored objects follow their wall live
       render();
       const dir = it.axis==="y" ? (delta<0?"up":"down") : (delta<0?"left":"right");
       setReadout("Wall moved", `${fmtFt(Math.abs(delta))} ${Math.abs(delta)<1e-6?"":dir}`);
@@ -217,6 +233,9 @@ const interactionHandlers = {
       // Carry along every free object captured in objStarts by this same
       // (post-snap) delta — see startDragRoom's comment.
       (it.objStarts||[]).forEach(s=>{ const o=(f.objects||[]).find(x=>x.id===s.id); if(o){ o.x=s.x+dx; o.y=s.y+dy; } });
+      // ANCHORED objects are not in objStarts — they follow their (moved)
+      // walls through resolveObjects instead, never both
+      resolveObjects(f);
       render();
       setReadout(snapViz&&(snapViz.targetId||snapViz.gx!=null||snapViz.gy!=null)?"Room → connect":"Room moved",
         `${fmtFt(dx)} · ${fmtFt(dy)}${it.roomIds.length>1?` · ${it.roomIds.length} connected rooms`:""}${it.pinned?" · pinned by locked room":""}`);
@@ -285,14 +304,82 @@ const interactionHandlers = {
       render();
       setReadout(fixtureLabel(o.type), `${fmtFt(o.x)} · ${fmtFt(o.y)}`);
     },
-    end(it){
+    end(it,e){
       if(it.active){
         const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===it.id);
-        if(o){ const r=roomContainingPoint(f,o.x,o.y); o.roomId = r?r.id:null; }
+        if(o){
+          const r=roomContainingPoint(f,o.x,o.y); o.roomId = r?r.id:null;
+          // auto-anchor: dropped flush against a wall of its (new) room
+          if(!(e && e.altKey)){ const a=autoAnchorOnDrop(f,o); if(a) setReadout(fixtureLabel(o.type), "anchored to the wall it was dropped against"); }
+        }
       }
       if(!it.active) it.preState=null;
       interaction=null; markDirty();
     },
+  },
+
+  /* anchored object drag: the pointer delta is split into the wall's lo→hi
+     direction (→ along) and roomId's inward normal (→ gap), each grid-
+     snapped (Alt bypasses); along is clamped to the wall's length and gap to
+     >= 0 (an object never pushes through the wall face). Only the ANCHOR is
+     edited — x/y/rot are re-derived by resolveObjects — and the anchor is
+     never broken by a drag (that's the inspector's explicit Unanchor). Lazy
+     undo: the snapshot is pushed only once along/gap actually change. */
+  anchoredObject: {
+    move(it,e){
+      if(!pastThreshold(it,e)) return;
+      const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===it.id);
+      if(!o || !o.anchor) return;
+      const [wx,wy]=eventWorld(e);
+      const dx=wx-it.startWorld[0], dy=wy-it.startWorld[1];
+      let along=it.startAlong + dx*it.fr.dir.x + dy*it.fr.dir.y;
+      let gap=it.startGap + dx*it.n.x + dy*it.n.y;
+      if(!e.altKey){ along=applySnap(along); gap=applySnap(gap); }
+      along=_r6(Math.max(0, Math.min(it.fr.len, along)));
+      gap=_r6(Math.max(0, gap));
+      if(Math.abs(along-o.anchor.along)>1e-9 || Math.abs(gap-o.anchor.gap)>1e-9){
+        commitCaptured(it);
+        o.anchor.along=along; o.anchor.gap=gap;
+        resolveObjects(f);
+        render();
+      }
+      setReadout(fixtureLabel(o.type), anchorReadout(o.anchor));
+    },
+    end(it){
+      if(!it.active) it.preState=null;
+      interaction=null; markDirty();
+    },
+  },
+
+  /* "Measure from wall…" (object inspector): a persistent pick mode — the
+     next click on a wall of the object's room anchors the selected object to
+     it with defaultAnchorFor's edge/along/gap (fine-tuned afterwards in the
+     inspector). Owns pointerdown while active (like the draw tools), so the
+     click doesn't start a wall drag; hovering highlights the wall it would
+     pick. Esc cancels (js/app.js). */
+  pickWall: {
+    down(it,e){
+      const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===it.objectId);
+      if(!o || o.anchor){ cancelPickWall(); return; }
+      const w=pickableWallAt(f, o, eventWorld(e));
+      if(!w){
+        const near=wallNearPoint(f, eventWorld(e));
+        setReadout("Measure from wall", near
+          ? (isOpenWall(f,near) ? "that edge is open (no wall) — pick a real wall" : "pick a wall of this object's own room")
+          : "click a wall of the object's room · Esc cancels");
+        return;
+      }
+      exitPickWall();
+      commit(()=>{ anchorObject(f, o, wallKeyOf(w)); sel={type:"object", id:o.id}; });
+      if(o.anchor) setReadout(fixtureLabel(o.type), anchorReadout(o.anchor));
+    },
+    move(it,e){
+      const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===it.objectId);
+      const w=o && pickableWallAt(f, o, eventWorld(e));
+      snapViz = w ? {edge:{a:w.a, b:w.b}} : null;
+      render();
+    },
+    end(){},
   },
 
   /* view pan */
@@ -390,6 +477,85 @@ const interactionHandlers = {
     },
   },
 };
+
+/* ---------- wall anchoring helpers (ARCHITECTURE.md item 5, anchored half) ---------- */
+
+/* Live readout for an anchor, e.g. `42" from wall · center 5'0" along`. */
+function fmtInches(ft){ return (+(ft*12).toFixed(1))+'"'; }
+function anchorReadout(a){ return `${fmtInches(a.gap)} from wall · center ${fmtFt(a.along)} along`; }
+
+/* Nearest wall to world point `pt` ([x,y]) within a click tolerance: the
+   SNAP_PX screen radius, or half the wall's band if that is wider (so a
+   click anywhere on a thick wall counts). `accept(w)` filters candidates. */
+function wallNearPoint(f, pt, accept){
+  const [x,y]=pt; let best=null, bd=Infinity;
+  for(const w of f.walls){
+    if(accept && !accept(w)) continue;
+    const A=ptOf(f,w.a), B=ptOf(f,w.b); if(!A || !B) continue;
+    const pr=projectPointSeg(x,y,A.x,A.y,B.x,B.y), d=Math.hypot(pr.x-x, pr.y-y);
+    const tol=Math.max(SNAP_PX/view.scale, effThickness(f,w)/2);
+    if(d<=tol && d<bd){ bd=d; best=w; }
+  }
+  return best;
+}
+/* A wall object `o` could be anchored to at `pt` (an edge of its own room,
+   not open, not degenerate — whatever defaultAnchorFor accepts). */
+function pickableWallAt(f, o, pt){
+  return wallNearPoint(f, pt, w=>!!defaultAnchorFor(f, o, wallKeyOf(w)));
+}
+
+function pickWallActive(){ return !!interaction && interaction.kind==="pickWall"; }
+/* Enter the pick-wall mode for a FREE object (the inspector's "Measure from
+   wall…"). Refused mid-drag / while another tool is active, and for an
+   object with no room (an anchor's wall must be an edge of its roomId). */
+function startPickWall(objectId){
+  if(interaction) return false;
+  const f=activeLevel(); const o=(f.objects||[]).find(x=>x.id===objectId);
+  if(!o || o.anchor) return false;
+  if(!o.roomId){ setReadout("Measure from wall","move the object into a room first — it can only measure from its own room's walls"); return false; }
+  interaction={kind:"pickWall", objectId};
+  snapViz=null;
+  svg.classList.add("drawing");
+  setReadout("Measure from wall","click a wall of the object's room · Esc cancels");
+  return true;
+}
+function exitPickWall(){
+  interaction=null; snapViz=null;
+  svg.classList.remove("drawing");
+}
+/* Esc: leave the pick mode without anchoring. Returns whether it was active. */
+function cancelPickWall(){
+  if(!pickWallActive()) return false;
+  exitPickWall(); render();
+  setReadout("Measure from wall","cancelled");
+  return true;
+}
+
+/* Auto-anchor on drop (ARCHITECTURE.md item 5's optional nicety): a free
+   object released within snap tolerance of a wall of its own room — some
+   box edge within SNAP_PX (in world units, the same radius computeSnap uses
+   for corners/walls) of that wall's interior face, either side of it — and
+   already squared up to it (within AUTO_ANCHOR_MAX_SKEW, so a drop never
+   silently rotates an object), with its center inside the wall's extent,
+   is anchored to the nearest such wall FLUSH (gap 0) with the facing edge.
+   Returns the new anchor, or null (the object stays free). Alt on release
+   bypasses it, like every other snap. */
+const AUTO_ANCHOR_MAX_SKEW = 1;   // degrees
+function autoAnchorOnDrop(f, o){
+  if(!o || o.anchor || !o.roomId) return null;
+  const room=f.rooms.find(r=>r.id===o.roomId); if(!room) return null;
+  const tol=SNAP_PX/view.scale, interiors=new Map();
+  let best=null, bd=Infinity;
+  loopWallKeys(room.loop).forEach(key=>{
+    if(!key) return;
+    const def=defaultAnchorFor(f, o, key, interiors); if(!def) return;
+    const fr=wallFrame(f,key), t=worldToAlong(fr, o);
+    if(t<=0 || t>=fr.len || def.skew>AUTO_ANCHOR_MAX_SKEW || Math.abs(def.rawGap)>tol) return;
+    if(Math.abs(def.rawGap)<bd){ bd=Math.abs(def.rawGap); best=key; }
+  });
+  if(!best || !anchorObject(f, o, best, {gap:0})) return null;
+  return o.anchor;
+}
 
 /* =========================================================================
    Room-drawing tools (ARCHITECTURE.md item 2). Unlike the drag kinds above,

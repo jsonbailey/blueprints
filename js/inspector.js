@@ -482,7 +482,7 @@ function deletePoint(f, id){
   return true;
 }
 
-/* ---------- object inspector (ARCHITECTURE.md item 5, free-placement half)
+/* ---------- object inspector (ARCHITECTURE.md item 5; anchoring below)
    ----------
    Objects live in a flat level.objects array (unlike openings, which nest
    under wallProps), so selection ({type:"object", id}) is a direct
@@ -494,10 +494,84 @@ function deletePoint(f, id){
    (unlike room deletion): removing one free object is low-stakes — it
    doesn't cascade into walls/corners/other rooms the way deleting a room
    does — which matches removeOpening's ✕ button (also confirm-free). */
+/* Anchoring (anchored half of item 5): a free object gets a "Measure from
+   wall…" button (js/tools.js startPickWall: the next click on a wall of its
+   room anchors it) and a computed, unstored "nearest wall" readout. An
+   anchored object instead shows its wall, an edge picker and along/gap
+   fields (same clamping as the drag: along within the wall, gap >= 0, via
+   updateAnchor), an "Unanchor" button, and its rotation controls are
+   disabled — rotation is derived from the wall while anchored. */
+const ANCHOR_EDGE_LABELS = {back:"Back", front:"Front", left:"Left side", right:"Right side"};
+function nearestWallReadout(f, o){
+  const room=f.rooms.find(r=>r.id===o.roomId); if(!room) return null;
+  let best=null;
+  loopWallKeys(room.loop).forEach(k=>{
+    if(!k) return; const d=defaultAnchorFor(f,o,k); if(!d) return;
+    if(!best || d.rawGap<best.rawGap) best=d;
+  });
+  return best;
+}
+function objectAnchorSectionHtml(f, o){
+  const a=o.anchor;
+  if(!a){
+    const near=nearestWallReadout(f,o);
+    return `<div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
+      <span class="field-label">Wall anchor</span>
+      <div class="muted">Free${near?` · nearest wall ${fmtInches(Math.max(0,near.rawGap))} away (${esc(ANCHOR_EDGE_LABELS[near.anchor.edge].toLowerCase())} edge)`:""}</div>
+      <div class="btngrid" style="margin-top:8px"><button class="btn" id="objAnchor" ${o.roomId?"":"disabled"}>Measure from wall…</button></div>
+      <p class="muted" style="margin-top:4px">${o.roomId
+        ? "Click this, then a wall of the object's room: it stays that far from the wall and follows it when the wall moves. Dropping it flush against a wall also anchors it."
+        : "Move it into a room first — it can only be anchored to its own room's walls."}</p>
+    </div>`;
+  }
+  const fr=wallFrame(f,a.wall);
+  const opts=Object.keys(ANCHOR_EDGE_LABELS).map(e=>`<option value="${e}">${esc(ANCHOR_EDGE_LABELS[e])}</option>`).join("");
+  return `<div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
+      <span class="field-label">Wall anchor</span>
+      <div class="muted">${esc(wallIdForKey(a.wall))}${fr?` · ${fmtFt(fr.len)} long`:""}</div>
+      <span class="field-label" style="margin-top:8px;display:block">Edge facing the wall</span>
+      <select id="objAnchorEdge">${opts}</select>
+      <div class="pair" style="margin-top:8px">
+        <div><span class="field-label">Center from ${esc(fr?fr.lo:"")}</span><input type="text" id="objAnchorAlong" value="${fmtFt(a.along)}"></div>
+        <div><span class="field-label">Gap from wall</span><input type="text" id="objAnchorGap" value="${fmtFt(a.gap)}"></div>
+      </div>
+      <div class="btngrid" style="margin-top:8px">
+        <button class="btn primary" id="objAnchorApply">Apply</button>
+        <button class="btn" id="objUnanchor">Unanchor</button>
+      </div>
+      <p class="muted" style="margin-top:4px">${fmtInches(a.gap)} from the wall's inside face. Drag it on the plan to slide it along / away from the wall; Unanchor makes it free again where it is.</p>
+    </div>`;
+}
+function wireObjectAnchorSection(f, o){
+  if(!o.anchor){
+    const b=document.getElementById("objAnchor");
+    if(b) b.onclick=()=>{ startPickWall(o.id); };
+    return;
+  }
+  const a=o.anchor;
+  const es=document.getElementById("objAnchorEdge"); es.value=a.edge;
+  es.onchange=()=>{ if(es.value===a.edge) return; commit(()=>{ updateAnchor(f,o,{edge:es.value}); }); };
+  const apply=()=>{
+    // an untouched field keeps the exact stored value (inputs show it rounded to the inch)
+    const av=document.getElementById("objAnchorAlong").value, gv=document.getElementById("objAnchorGap").value;
+    const al = av===fmtFt(a.along) ? a.along : parseLen(av), gp = gv===fmtFt(a.gap) ? a.gap : parseLen(gv);
+    if(isNaN(al) || isNaN(gp)){ setReadout("Anchor","enter a center offset and a gap (e.g. 3' 6\")"); return; }
+    const fr=wallFrame(f,a.wall); if(!fr) return;
+    const nal=_r6(Math.max(0,Math.min(fr.len,al))), ngp=_r6(Math.max(0,gp));
+    if(Math.abs(nal-a.along)<1e-9 && Math.abs(ngp-a.gap)<1e-9){ renderInspector(); return; }   // no-op: no undo entry
+    commit(()=>{ updateAnchor(f,o,{along:al, gap:gp}); });
+    if(Math.abs(nal-al)>1e-6 || Math.abs(ngp-gp)>1e-6) setReadout("Anchor","clamped: the center stays on the wall and the gap can't be negative");
+  };
+  document.getElementById("objAnchorApply").onclick=apply;
+  ["objAnchorAlong","objAnchorGap"].forEach(id=>{ document.getElementById(id).onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); apply(); } }; });
+  document.getElementById("objUnanchor").onclick=()=>{ commit(()=>{ unanchorObject(o); }); };
+}
+
 function renderObjectInspector(f, body){
   const o=(f.objects||[]).find(x=>x.id===sel.id); if(!o){clearSel();return;}
   const def=fixtureTypeDef(o.type);
   const room=f.rooms.find(r=>r.id===o.roomId);
+  const anchored=!!o.anchor, dis=anchored?"disabled":"";
   body.innerHTML = `
     <div class="kicker">${esc((def?def.label:o.type).toUpperCase())} · ${esc(o.id)}</div>
     <span class="field-label">Room</span>
@@ -514,14 +588,19 @@ function renderObjectInspector(f, body){
     <div style="border-top:1px solid var(--panel-line);margin-top:12px;padding-top:12px">
       <span class="field-label">Rotation (°)</span>
       <div class="pair">
-        <div><input type="text" id="objRot" value="${+(o.rot||0).toFixed(1)}"></div>
-        <div style="display:flex;align-items:flex-end"><button class="btn" id="objRot90" style="width:100%">Rotate 90°</button></div>
+        <div><input type="text" id="objRot" value="${+(o.rot||0).toFixed(1)}" ${dis}></div>
+        <div style="display:flex;align-items:flex-end"><button class="btn" id="objRot90" style="width:100%" ${dis}>Rotate 90°</button></div>
       </div>
-      <div class="btngrid" style="margin-top:8px"><button class="btn primary" id="objApplyRot">Apply rotation</button></div>
+      <div class="btngrid" style="margin-top:8px"><button class="btn primary" id="objApplyRot" ${dis}>Apply rotation</button></div>
+      ${anchored?`<p class="muted" style="margin-top:4px">Rotation follows the wall while anchored — pick a different edge below, or Unanchor to rotate freely.</p>`:""}
       <label class="toggle row" style="margin-top:10px"><input type="checkbox" id="objMirror" ${o.mirror?"checked":""}><span>Mirror</span></label>
     </div>
+    ${objectAnchorSectionHtml(f, o)}
     <div class="btngrid" style="margin-top:12px"><button class="btn danger" id="objDel">Delete</button></div>
-    <p class="muted" style="margin-top:8px">Drag it on the plan to move it; dropping it inside a room reassigns which room it belongs to.</p>`;
+    <p class="muted" style="margin-top:8px">${anchored
+      ? "Dragging it on the plan keeps it anchored: it slides along the wall and away from it."
+      : "Drag it on the plan to move it; dropping it inside a room reassigns which room it belongs to."}</p>`;
+  wireObjectAnchorSection(f, o);
   const applySize=()=>{
     const wv=document.getElementById("objW").value, dv=document.getElementById("objD").value;
     const w = wv===fmtFt(o.w) ? o.w : parseLen(wv);
@@ -533,6 +612,7 @@ function renderObjectInspector(f, body){
   document.getElementById("objApplySize").onclick=applySize;
   ["objW","objD"].forEach(id=>{ document.getElementById(id).onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); applySize(); } }; });
   const applyRot=()=>{
+    if(o.anchor) return;   // derived from the wall while anchored
     const v=parseFloat(document.getElementById("objRot").value);
     if(isNaN(v)){ setReadout("Object","enter a rotation in degrees"); return; }
     const norm=((v%360)+360)%360;
@@ -541,10 +621,10 @@ function renderObjectInspector(f, body){
   };
   document.getElementById("objApplyRot").onclick=applyRot;
   document.getElementById("objRot").onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); applyRot(); } };
-  document.getElementById("objRot90").onclick=()=>{ commit(()=>{ o.rot=(((o.rot||0)+90)%360+360)%360; }); };
+  document.getElementById("objRot90").onclick=()=>{ if(o.anchor) return; commit(()=>{ o.rot=(((o.rot||0)+90)%360+360)%360; }); };
   document.getElementById("objMirror").onchange=e=>{ commit(()=>{ o.mirror=e.target.checked; }); };
   document.getElementById("objDel").onclick=()=>{ commit(()=>{ removeObject(f,o.id); sel={type:null,id:null}; }); };
-  setReadout(def?def.label:o.type, `${fmtFt(o.w)} × ${fmtFt(o.d)}${room?" · "+room.name:" · not in a room"}`);
+  setReadout(def?def.label:o.type, o.anchor ? anchorReadout(o.anchor) : `${fmtFt(o.w)} × ${fmtFt(o.d)}${room?" · "+room.name:" · not in a room"}`);
 }
 
 /* Set the interior angle at V (within room) by rotating one adjacent edge about V. */

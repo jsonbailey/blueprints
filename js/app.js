@@ -421,9 +421,10 @@ document.addEventListener("keydown",(e)=>{
 
   if(e.key==="Escape"){
     // Esc priority: cancel an active draw tool (discarding its in-progress
-    // shape) first, then close an open level panel, then clear the current
+    // shape) or wall-pick mode first, then close an open level panel, then clear the current
     // selection — each an early-return guard clause.
     if(cancelDrawTool()) return;
+    if(cancelPickWall()) return;   // "Measure from wall…" pick mode
     if(_levelPanelOpen){ closeLevelPanel(); return; }
     clearSel();
     return;
