@@ -170,3 +170,37 @@ test("a pan (clears the selection) in between also resets the cycle", () => {
   `);
   assert.equal(r.after, r.top);
 });
+
+/* ---------------- owning-room highlight for a selected wall ---------------- */
+
+const ROOM_STYLES = `
+  function roomStyles(){
+    render();
+    const out={}; (function walk(n){ (n.children||[]).forEach(c=>{
+      if(c.tagName==="POLYGON" && c.dataset && c.dataset.room) out[c.dataset.room]={
+        fill:c.getAttribute("fill"), stroke:c.getAttribute("stroke"), dash:c.getAttribute("stroke-dasharray"), cls:c.getAttribute("class") };
+      walk(c); }); })(svg);
+    return out;
+  }
+`;
+
+test("selected wall highlights its owning room(s), distinctly from a direct room selection", () => {
+  const { run } = loadApp();
+  const r = vmRun(run, ROOM_STYLES + `
+    const f = setupShared();
+    sel={type:"wall", id:W(f,"a2","a3").id};      const shared = roomStyles();
+    sel={type:"wall", id:W(f,"a1","a2").id};      const exterior = roomStyles();
+    sel={type:"room", id:"rA"};                   const roomSel = roomStyles();
+    sel={type:null, id:null};                     const none = roomStyles();
+    return { shared, exterior, roomSel, none };
+  `);
+  assert.equal(r.shared.rA.cls, "wall-owner"); assert.equal(r.shared.rB.cls, "wall-owner", "shared wall: both rooms");
+  assert.equal(r.exterior.rA.cls, "wall-owner"); assert.equal(r.exterior.rB.cls, null, "exterior wall: only its room");
+  assert.equal(r.exterior.rB.fill, r.none.rB.fill, "non-owner unchanged");
+  assert.notEqual(r.exterior.rA.fill, r.none.rA.fill, "owner gets a tint");
+  // distinct from a direct room selection: different fill, no dashed markup outline
+  assert.notEqual(r.exterior.rA.fill, r.roomSel.rA.fill);
+  assert.equal(r.roomSel.rA.stroke, "var(--markup)"); assert.equal(r.roomSel.rA.dash, "4 4");
+  assert.equal(r.exterior.rA.stroke, "none"); assert.equal(r.exterior.rA.dash, "none");
+  assert.equal(r.roomSel.rA.cls, null, "a directly selected room is not marked as a wall owner");
+});

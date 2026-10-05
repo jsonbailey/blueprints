@@ -80,21 +80,32 @@ function drawLevel(f, {shadow}){
   const gRooms = el("g",{}), gWalls = el("g",{}), gDims = el("g",{}), gLabels = el("g",{}), gHandles = el("g",{}), gBadge = el("g",{});
   const lockedSet = shadow ? new Set() : lockedPointIds(f);
 
+  // Interior-offset geometry per room (active level only): drives the
+  // mitered-corner clip below and the per-side dimension labels.
+  const interiors = new Map();
+
+  // Rooms owning the selected wall (wallSides: 1 for an exterior wall, 2 for
+  // a shared one) get a faint tint — deliberately subtler than roomSel's
+  // (half the fill alpha, no dashed outline) so it never reads as the room
+  // itself being selected.
+  const selWall = !shadow && sel.type==="wall" ? wallById(f, sel.id) : null;
+  const wallOwners = new Set(selWall ? wallSides(f, selWall, interiors).map(s=>s.room.id) : []);
+
   // room fills
   f.rooms.forEach(r=>{
     const pts = r.loop.map(id=>{const p=ptOf(f,id); const [sx,sy]=toScreen(p.x,p.y); return sx+","+sy;}).join(" ");
     const roomSel = !shadow && sel.type==="room" && sel.id===r.id;
+    const owner = wallOwners.has(r.id);
     const locked = !shadow && r.locked;
-    gRooms.appendChild(el("polygon",{points:pts,
-      fill: shadow ? "rgba(62,124,168,0.05)" : (roomSel ? "rgba(206,59,35,0.10)" : (locked ? "rgba(110,106,99,0.10)" : fillFor(r.kind))),
+    const poly = el("polygon",{points:pts,
+      fill: shadow ? "rgba(62,124,168,0.05)" : (roomSel ? "rgba(206,59,35,0.10)" : (owner ? "rgba(206,59,35,0.05)" : (locked ? "rgba(110,106,99,0.10)" : fillFor(r.kind)))),
       stroke: roomSel ? "var(--markup)" : (locked ? "var(--graphite-soft)" : "none"),
       "stroke-width": (roomSel||locked) ? 1.5 : 0,
-      "stroke-dasharray": roomSel ? "4 4" : (locked ? "2 3" : "none")}));
+      "stroke-dasharray": roomSel ? "4 4" : (locked ? "2 3" : "none")});
+    if(!shadow){ poly.dataset.room=r.id; if(owner) poly.setAttribute("class","wall-owner"); }
+    gRooms.appendChild(poly);
   });
 
-  // Interior-offset geometry per room (active level only): drives the
-  // mitered-corner clip below and the per-side dimension labels.
-  const interiors = new Map();
   const clipPolyCache = new Map();   // roomId → screen-space path data, or "" if unusable
   function interiorOf(r){ if(!interiors.has(r.id)) interiors.set(r.id, roomInterior(f,r)); return interiors.get(r.id); }
   function interiorClipPath(r){
