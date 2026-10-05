@@ -1378,6 +1378,49 @@ function projectPointSeg(px,py,ax,ay,bx,by){
   return {x:ax+t*dx, y:ay+t*dy, t};
 }
 
+/* ---------- click hit-testing (click-to-cycle through overlapping geometry) ----------
+   Two walls, or two corner points, can sit exactly on top of each other —
+   e.g. right after detachRoom/detachCorner, which mint fresh point ids at
+   the same coordinates. These return EVERY candidate near a world point so
+   js/tools.js can cycle through them on repeated clicks (cycleTarget).
+
+   Order is "top to bottom", i.e. TOPMOST FIRST: js/render.js appends wall
+   bands (gWalls) and corner handles (gHandles) in f.walls / f.points array
+   order, and the later-painted SVG element wins pointer hit-testing, so the
+   LAST array entry is the one drawn on top. Both functions therefore walk
+   the array back to front.
+
+   Pure geometry: tolerances are in WORLD units (feet); converting a screen-
+   pixel radius into feet (view.scale) is the caller's job. */
+
+/* Walls whose centerline segment passes within `tol` of (x,y). `tol` is a
+   number, or a function w → number for a per-wall radius (e.g. half the
+   wall's drawn band). Returns wall objects, topmost first. */
+function wallsNear(f, x, y, tol){
+  const out=[];
+  for(let i=f.walls.length-1;i>=0;i--){
+    const w=f.walls[i]; const A=ptOf(f,w.a), B=ptOf(f,w.b); if(!A || !B) continue;
+    const pr=projectPointSeg(x,y,A.x,A.y,B.x,B.y);
+    const r = typeof tol==="function" ? tol(w) : tol;
+    if(Math.hypot(pr.x-x, pr.y-y) <= r) out.push(w);
+  }
+  return out;
+}
+
+/* Distinct corner points within `tol` (default MERGE_TOL, the "same spot"
+   radius welding uses) of (x,y). Point ids are the unit of identity: a
+   corner WELDED across several rooms is a single f.points entry, so it
+   yields exactly one candidate — only unwelded-but-coincident points (e.g.
+   after "Detach junction") produce more than one. Topmost first. */
+function pointsNear(f, x, y, tol=MERGE_TOL){
+  const out=[];
+  for(let i=f.points.length-1;i>=0;i--){
+    const p=f.points[i];
+    if(Math.hypot(p.x-x, p.y-y) <= tol) out.push(p);
+  }
+  return out;
+}
+
 /* Room-drag snapping: given the room's corners (at start positions) and the
    proposed delta, find the smallest correction that lands a corner on another
    corner, or aligns a corner to a shared x/y. Returns adjusted delta + viz. */
