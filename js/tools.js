@@ -51,10 +51,15 @@ function pastThreshold(d,e){
      they always have.
    - Repeat press: within DRAG_PX (client px) of the previous wall/corner
      press, same kind (wall after wall / point after point), and the current
-     selection is one of this press's candidates → the NEXT candidate in
-     top-to-bottom order (wallsNear/pointsNear, js/model.js), wrapping back
-     to the top after the bottom one. One candidate → it simply stays
-     selected.
+     selection is one of this press's candidates → the press acts on the
+     CURRENT selection, and the NEXT candidate in top-to-bottom order
+     (wallsNear/pointsNear, js/model.js; wrapping back to the top after the
+     bottom one) is only stashed as `pendingCycleId` on the interaction. The
+     `point`/`wall` end() handlers apply it only if the gesture stayed a
+     plain click (`!it.active`); a press that turns into a drag drags what
+     was already selected. One candidate → nothing pending, it simply stays
+     selected. (A locked item has no drag, so its pending advance is applied
+     at once.)
    Anything else in between (a press elsewhere, a pan that clears the
    selection, selecting a room) breaks the repeat condition by itself, so
    the next press at the original spot starts over from the top.
@@ -88,6 +93,8 @@ function cycleCandidates(kind, nativeId, e){
   const p=ptOf(f,nativeId);
   return p ? pointsNear(f, p.x, p.y).map(q=>q.id) : [];
 }
+/* → {id, pending}: `id` is what this press selects/drags now; `pending` is
+   the id to advance to on a plain-click release (null if not a repeat). */
 function cycleTarget(kind, nativeId, e){
   let cands=cycleCandidates(kind, nativeId, e);
   if(!cands.includes(nativeId)) cands=[nativeId];
@@ -96,19 +103,24 @@ function cycleTarget(kind, nativeId, e){
   const repeat = prev && prev.kind===kind
     && Math.hypot(e.clientX-prev.x, e.clientY-prev.y) <= DRAG_PX
     && sel.type===kind && cands.includes(sel.id);
-  if(!repeat) return nativeId;
-  return cands[(cands.indexOf(sel.id)+1) % cands.length];
+  if(!repeat) return {id:nativeId, pending:null};
+  const next=cands[(cands.indexOf(sel.id)+1) % cands.length];
+  return {id:sel.id, pending: next!==sel.id ? next : null};
 }
 
 /* ---------- gesture entry points (wired from js/render.js / js/app.js) ---------- */
 
 function startDragPoint(e,id){
   e.stopPropagation();
-  id=cycleTarget("point", id, e);   // may differ from the pressed element mid-cycle
+  const cyc=cycleTarget("point", id, e);   // mid-cycle: keeps the current selection
+  id=cyc.id;
   const f=activeLevel(); const p=ptOf(f,id);
   selectPoint(id);
-  if(lockedPointIds(f).has(id)){ setReadout("Locked","corner belongs to a locked room"); return; }
-  interaction={kind:"point", id, startClient:{x:e.clientX,y:e.clientY},
+  if(lockedPointIds(f).has(id)){
+    if(cyc.pending) selectPoint(cyc.pending);   // no drag to wait for → advance now
+    setReadout("Locked","corner belongs to a locked room"); return;
+  }
+  interaction={kind:"point", id, pendingCycleId:cyc.pending, startClient:{x:e.clientX,y:e.clientY},
         startWorld:eventWorld(e),
         startPt:{x:p.x,y:p.y}, preState:captureState(), committed:false, active:false,
         snapTarget:null, snapEdge:null};
@@ -176,17 +188,21 @@ function startDragObject(e,id){
 
 function startDragWall(e,id){
   e.stopPropagation();
-  id=cycleTarget("wall", id, e);    // may differ from the pressed element mid-cycle
+  const cyc=cycleTarget("wall", id, e);    // mid-cycle: keeps the current selection
+  id=cyc.id;
   const f=activeLevel(); const w=wallById(f,id); if(!w) return;
   selectWall(id);
   const locked=lockedPointIds(f);
-  if(locked.has(w.a) && locked.has(w.b)){ setReadout("Locked","wall belongs to a locked room"); return; }
+  if(locked.has(w.a) && locked.has(w.b)){
+    if(cyc.pending) selectWall(cyc.pending);    // no drag to wait for → advance now
+    setReadout("Locked","wall belongs to a locked room"); return;
+  }
   const a=ptOf(f,w.a), b=ptOf(f,w.b);
   // The wall's dominant orientation picks the single allowed motion axis:
   // a mostly-horizontal wall slides vertically; a mostly-vertical wall slides
   // horizontally. The wall stays parallel and its attached sides stretch evenly.
   const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
-  interaction={kind:"wall", id, axis: horiz ? "y" : "x",
+  interaction={kind:"wall", id, pendingCycleId:cyc.pending, axis: horiz ? "y" : "x",
     aId:w.a, bId:w.b, aStart:{x:a.x,y:a.y}, bStart:{x:b.x,y:b.y},
     startClient:{x:e.clientX,y:e.clientY},
     startWorld:eventWorld(e),
@@ -250,7 +266,10 @@ const interactionHandlers = {
         if(mid){ weldPoints(f, it.id, mid); sel={type:"point", id:mid}; }
       }
       if(!it.active) it.preState=null;
-      interaction=null; snapViz=null; markDirty();
+      interaction=null; snapViz=null;
+      // plain click on a repeat press: advance the cycle (see cycleTarget)
+      if(!it.active && it.pendingCycleId) sel={type:"point", id:it.pendingCycleId};
+      markDirty();
     },
   },
 
@@ -274,8 +293,11 @@ const interactionHandlers = {
       const dir = it.axis==="y" ? (delta<0?"up":"down") : (delta<0?"left":"right");
       setReadout("Wall moved", `${fmtFt(Math.abs(delta))} ${Math.abs(delta)<1e-6?"":dir}`);
     },
-    end(){
-      interaction=null; renderInspector();
+    end(it){
+      interaction=null;
+      // plain click on a repeat press: advance the cycle (see cycleTarget)
+      if(!it.active && it.pendingCycleId){ selectWall(it.pendingCycleId); return; }
+      renderInspector();
     },
   },
 

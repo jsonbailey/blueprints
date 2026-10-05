@@ -74,19 +74,71 @@ test("two coincident walls: click selects topmost, second click the one undernea
   assert.deepEqual(r.seq, [r.top, r.under, r.top, r.under]);
 });
 
-test("cycling also arms the drag on the resolved wall, not the pressed element", () => {
+test("repeat press that becomes a DRAG drags the already-selected wall, without cycling", () => {
+  const { run } = loadApp();
+  const r = vmRun(run, `
+    const f = setupShared();
+    detachRoom(f, f.rooms[1]);
+    const [top, under] = wallsNear(f, 10, 5, 0.1).map(w=>w.id);
+    const xs = id => { const w=wallById(f,id); return [ptOf(f,w.a).x, ptOf(f,w.b).x]; };
+    const first = click("wall", top, 10, 5);         // selects the top wall
+    startDragWall(ev(10,5), top);                     // repeat press at the same spot...
+    const selAtPress = sel.id, armed = interaction.id, pending = interaction.pendingCycleId;
+    interactionHandlers.wall.move(interaction, ev(12,5));   // ...that moves 40px: a real drag
+    interactionHandlers.wall.end(interaction, ev(12,5));
+    return { top, under, first, selAtPress, armed, pending, after: sel.id, topXs: xs(top), underXs: xs(under) };
+  `);
+  assert.equal(r.first, r.top);
+  assert.equal(r.selAtPress, r.top, "the press itself does not reselect");
+  assert.equal(r.armed, r.top, "the drag is armed on the selected wall");
+  assert.equal(r.pending, r.under, "the advance is only pending");
+  assert.equal(r.after, r.top, "after the drag the same wall is still selected");
+  assert.deepEqual(r.topXs, [12, 12], "the selected wall is what moved");
+  assert.deepEqual(r.underXs, [10, 10], "the wall underneath stayed put");
+});
+
+test("repeat press released WITHOUT moving (a plain click) advances the cycle", () => {
   const { run } = loadApp();
   const r = vmRun(run, `
     const f = setupShared();
     detachRoom(f, f.rooms[1]);
     const [top, under] = wallsNear(f, 10, 5, 0.1).map(w=>w.id);
     click("wall", top, 10, 5);
-    startDragWall(ev(10,5), top);                   // second press, held
-    const armed = interaction && interaction.id;
-    interactionHandlers.wall.end(interaction);
-    return { under, armed };
+    startDragWall(ev(10,5), top);
+    const during = sel.id;                            // still the top wall while held
+    interactionHandlers.wall.move(interaction, { clientX: 201, clientY: 100 });   // jitter under DRAG_PX
+    interactionHandlers.wall.end(interaction, ev(10,5));
+    const w=wallById(f,top);
+    return { top, under, during, after: sel.id, topX: ptOf(f,w.a).x };
   `);
-  assert.equal(r.armed, r.under);
+  assert.equal(r.during, r.top);
+  assert.equal(r.after, r.under, "click released → next one underneath");
+  assert.equal(r.topX, 10, "nothing moved");
+});
+
+test("corner: a repeat press that drags moves the selected point; a plain click advances", () => {
+  const { run } = loadApp();
+  const r = vmRun(run, `
+    const f = setupShared();
+    opts.snapConnect = false;                         // keep the drop where it lands (no re-weld)
+    detachCorner(f, "a2");
+    const [top, under] = pointsNear(f, 10, 0).map(p=>p.id);
+    click("point", top, 10, 0);
+    startDragPoint(ev(10,0), top);
+    const armed = interaction.id;
+    interactionHandlers.point.move(interaction, ev(11,1));
+    interactionHandlers.point.end(interaction, ev(11,1));
+    const dragged = { sel: sel.id, top: {x:ptOf(f,top).x, y:ptOf(f,top).y}, under: {x:ptOf(f,under).x, y:ptOf(f,under).y} };
+    // now the two are apart; put the top one back and click twice
+    ptOf(f,top).x=10; ptOf(f,top).y=0; cycleLast=null; sel={type:null,id:null};
+    const clicks = [click("point", top, 10, 0), click("point", top, 10, 0)];
+    return { top, under, armed, dragged, clicks };
+  `);
+  assert.equal(r.armed, r.top);
+  assert.equal(r.dragged.sel, r.top);
+  assert.deepEqual(r.dragged.top, { x: 11, y: 1 }, "the selected point moved");
+  assert.deepEqual(r.dragged.under, { x: 10, y: 0 }, "the one underneath did not");
+  assert.deepEqual(r.clicks, [r.top, r.under]);
 });
 
 test("a single wall: repeated clicks keep it selected (no drift, no error)", () => {

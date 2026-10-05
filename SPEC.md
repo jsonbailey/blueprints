@@ -78,7 +78,8 @@ build a plan by adding rooms and levels in-app or opening a previously saved
 - Overlapping geometry (e.g. coincident walls/corners left by Detach room /
   Detach junction): the first click selects what's on top; clicking again
   at the same spot (within 3px) selects the next wall/corner underneath,
-  wrapping back to the top. A welded corner is a single point, so it never
+  wrapping back to the top; a repeat press that turns into a drag moves the
+  current selection instead of cycling. A welded corner is a single point, so it never
   cycles. A selected wall faintly tints the room(s) it belongs to (subtler
   than a selected room's dashed outline).
 - Edit a wall's exact length (choose which end stays fixed); edit a
