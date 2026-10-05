@@ -86,6 +86,13 @@
       <h2>View</h2>
       <label class="toggle row"><input type="checkbox" id="optShadow" checked><span>Show other levels as shadow</span></label>
       <label class="toggle row"><input type="checkbox" id="optDims" checked><span>Wall dimensions</span></label>
+      <div class="row">
+        <label for="optLengthMode">Wall length</label>
+        <select id="optLengthMode" style="flex:0 0 130px">
+          <option value="centerline">Centerline</option>
+          <option value="inside" selected>Inside</option>
+        </select>
+      </div>
       <label class="toggle row"><input type="checkbox" id="optLabels" checked><span>Room names &amp; area</span></label>
       <label class="toggle row"><input type="checkbox" id="optGrid" checked><span>Grid</span></label>
       <label class="toggle row"><input type="checkbox" id="optSnapConnect" checked><span>Snap corners &amp; align (hold Alt to bypass)</span></label>

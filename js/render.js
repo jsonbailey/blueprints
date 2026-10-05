@@ -167,30 +167,51 @@ function drawLevel(f, {shadow}){
     }
     gWalls.appendChild(line);
 
-    // dimension labels (active level only): one per room that runs along
-    // this wall (an exterior wall has 1, a shared wall 2), each showing THAT
+    // dimension labels (active level only). opts.lengthMode="inside" (the
+    // default/current shipped behavior): one per room that runs along this
+    // wall (an exterior wall has 1, a shared wall 2), each showing THAT
     // room's interior clear length — the distance between its own interior
     // corners on this edge — and sitting inside that room, just clear of
-    // the drawn band, so neighbours' labels never collide on the shared line.
+    // the drawn band, so neighbours' labels never collide on the shared
+    // line. opts.lengthMode="centerline": revert to one label per WALL at
+    // the raw centerline length (the pre-interior-geometry behavior),
+    // positioned at the wall's midpoint, offset perpendicular by a fixed
+    // screen distance clear of the drawn band — there's no per-room
+    // geometry to read in this mode, deliberately.
     if(!shadow && opts.dims){
       const ang = Math.atan2(by-ay,bx-ax)*180/Math.PI;
       const flip = (ang>90||ang<-90);
-      wallSides(f, w, interiors).forEach(({side})=>{
-        if(!side || side.len<=0.4) return;
-        const mid = {x:(side.a.x+side.b.x)/2, y:(side.a.y+side.b.y)/2};   // on the interior face
-        const [fx,fy] = toScreen(mid.x,mid.y);
-        // screen and world share orientation (uniform positive scale), so the
-        // world inward normal is the screen one; push from the face out to
-        // 11px past the drawn band's edge (band can be wider than real scale)
-        const off = 11 + Math.max(0, sw/2 - side.half*view.scale);
-        const lx = fx+side.n.x*off, ly = fy+side.n.y*off;
-        const t = el("text",{x:lx,y:ly, fill: isSel?"var(--markup)":"var(--graphite-soft)",
-          "font-family":"var(--mono)","font-size":11,"text-anchor":"middle","dominant-baseline":"central",
-          transform:`rotate(${flip?ang+180:ang} ${lx} ${ly})`,
-          "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3});
-        t.textContent = fmtFt(side.len);
-        gDims.appendChild(t);
-      });
+      if(opts.lengthMode==="centerline"){
+        const clen = Math.hypot(b.x-a.x,b.y-a.y);
+        if(clen>0.4){
+          const dlen=Math.hypot(bx-ax,by-ay)||1, nx=-(by-ay)/dlen, ny=(bx-ax)/dlen;   // screen-space perpendicular unit vector
+          const off = 11 + sw/2;
+          const lx=(ax+bx)/2+nx*off, ly=(ay+by)/2+ny*off;
+          const t = el("text",{x:lx,y:ly, fill: isSel?"var(--markup)":"var(--graphite-soft)",
+            "font-family":"var(--mono)","font-size":11,"text-anchor":"middle","dominant-baseline":"central",
+            transform:`rotate(${flip?ang+180:ang} ${lx} ${ly})`,
+            "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3});
+          t.textContent = fmtFt(clen);
+          gDims.appendChild(t);
+        }
+      } else {
+        wallSides(f, w, interiors).forEach(({side})=>{
+          if(!side || side.len<=0.4) return;
+          const mid = {x:(side.a.x+side.b.x)/2, y:(side.a.y+side.b.y)/2};   // on the interior face
+          const [fx,fy] = toScreen(mid.x,mid.y);
+          // screen and world share orientation (uniform positive scale), so the
+          // world inward normal is the screen one; push from the face out to
+          // 11px past the drawn band's edge (band can be wider than real scale)
+          const off = 11 + Math.max(0, sw/2 - side.half*view.scale);
+          const lx = fx+side.n.x*off, ly = fy+side.n.y*off;
+          const t = el("text",{x:lx,y:ly, fill: isSel?"var(--markup)":"var(--graphite-soft)",
+            "font-family":"var(--mono)","font-size":11,"text-anchor":"middle","dominant-baseline":"central",
+            transform:`rotate(${flip?ang+180:ang} ${lx} ${ly})`,
+            "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3});
+          t.textContent = fmtFt(side.len);
+          gDims.appendChild(t);
+        });
+      }
     }
 
     // end badges on the selected wall: which corner is ① / ② and which moves

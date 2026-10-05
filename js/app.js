@@ -17,6 +17,7 @@ projNameEl.addEventListener("blur", ()=> setProjectName(projNameEl.textContent))
 
 let movingEnd = "b";                 // which wall endpoint moves when length is edited
 let cornerRoom = null;               // which room's corner is targeted for angle ops
+let lengthRoom = null;               // which room's interior length is shown/edited for a shared wall in "inside" mode (mirrors cornerRoom)
 
 /* ---------- selection + inspector ---------- */
 function selectWall(id){ sel={type:"wall",id}; render(); renderInspector(); }
@@ -363,6 +364,10 @@ function startRenameLevel(id, nameEl){
 document.getElementById("optShadow").onchange=e=>{opts.shadow=e.target.checked;render();};
 document.getElementById("optDims").onchange  =e=>{opts.dims=e.target.checked;render();};
 document.getElementById("optLabels").onchange=e=>{opts.labels=e.target.checked;render();};
+document.getElementById("optLengthMode").onchange=e=>{
+  opts.lengthMode=e.target.value; render();
+  if(sel.type==="wall") renderInspector();   // the Length field/bigval depends on the mode too
+};
 document.getElementById("optGrid").onchange  =e=>{opts.grid=e.target.checked;render();};
 document.getElementById("optSnap").onchange  =e=>{opts.snap=parseFloat(e.target.value);};
 document.getElementById("optSnapConnect").onchange =e=>{opts.snapConnect=e.target.checked;};

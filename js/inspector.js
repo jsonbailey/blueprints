@@ -53,20 +53,55 @@ function wireThicknessPicker(selEl, rowEl, inputEl, applyEl, pick){
   inputEl.onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); apply(); } };
 }
 
+/* ---------- wall length display/edit mode (opts.lengthMode) ----------
+   "centerline" is the raw endpoint-to-endpoint distance, always well-defined.
+   "inside" shows/edits the interior clear length of ONE adjacent room, via
+   wallSides() (js/model.js) — already computed by the interior-offset
+   geometry from a prior task. A wall borders either one room (exterior wall:
+   no choice to make) or two (a shared interior wall: pick which room's
+   length is shown, exactly like cornerRoom's pattern for a shared corner's
+   angle — `lengthRoom` remembers the choice, reset to the first available
+   side whenever it doesn't apply to the current wall).
+   Falls back to "centerline" (with `degenerate:true`) if wallSides() finds
+   no USABLE side at all for this wall — shouldn't happen for a real wall,
+   but a room's roomInterior can degenerate (near-collapsed offset geometry);
+   never crash or show nonsense, same spirit as other degenerate-geometry
+   fallbacks in this codebase.
+   Returns {mode, len (the value to show/accept), centerline, sides (the
+   usable wallSides() entries), cur (the chosen side, or null), degenerate}. */
+function wallLengthState(f, w){
+  const a=ptOf(f,w.a), b=ptOf(f,w.b);
+  const centerline=Math.hypot(b.x-a.x,b.y-a.y);
+  if(opts.lengthMode!=="inside") return {mode:"centerline", len:centerline, centerline, sides:[], cur:null};
+  const sides=wallSides(f,w).filter(s=>s.side && s.side.len>1e-6);
+  if(!sides.length) return {mode:"centerline", len:centerline, centerline, sides:[], cur:null, degenerate:true};
+  if(!lengthRoom || !sides.some(s=>s.room.id===lengthRoom)) lengthRoom=sides[0].room.id;
+  const cur=sides.find(s=>s.room.id===lengthRoom) || sides[0];
+  return {mode:"inside", len:cur.side.len, centerline, sides, cur};
+}
+
 function renderWallInspector(f, body){
   const w=wallById(f,sel.id); if(!w){clearSel();return;}
   const a=ptOf(f,w.a), b=ptOf(f,w.b);
-  const len=Math.hypot(b.x-a.x,b.y-a.y);
   const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
+  const ls = wallLengthState(f, w);
+  const len = ls.centerline;      // the ACTUAL wall length — openings placement below needs this, not the display value
+  const dispLen = ls.len;
+  const lenRoomPicker = ls.sides.length>1
+    ? `<select id="lenRoomSel" style="margin-bottom:6px">${ls.sides.map(s=>
+        `<option value="${esc(s.room.id)}" ${s.room.id===ls.cur.room.id?"selected":""}>${esc(s.room.name)}</option>`).join("")}</select>`
+    : "";
   const open=isOpenWall(f,w), override=wallThicknessOverride(f,w), eff=effThickness(f,w);
   const thkChoice = override==null ? "default" : presetIdFor(override);
   const thkSrc = open ? "open — no wall" : (override==null ? "level default" : "override");
   body.innerHTML = `
     <div class="kicker">WALL · ${w.id}</div>
-    <span class="field-label">Length</span>
-    <div class="bigval">${fmtFt(len)}</div>
+    <span class="field-label">Length${ls.mode==="inside"?` (inside${ls.sides.length>1?", "+esc(ls.cur.room.name):""})`:""}</span>
+    ${lenRoomPicker}
+    <div class="bigval">${fmtFt(dispLen)}</div>
+    ${ls.degenerate?`<p class="muted">This wall's interior geometry isn't usable right now, so length is shown/edited as centerline instead.</p>`:""}
     <span class="field-label">Set length (e.g. 13' 7" or 13.58)</span>
-    <input type="text" id="lenInput" value="${fmtFt(len)}">
+    <input type="text" id="lenInput" value="${fmtFt(dispLen)}">
     <div class="row" style="margin-top:10px">
       <label>Move which end?</label>
       <select id="endSel" style="flex:0 0 120px">
@@ -104,6 +139,9 @@ function renderWallInspector(f, body){
       commit(()=>{ setWallThickness(f,w,t); });
     });
   document.getElementById("wallOpen").onchange=e=>{ commit(()=>{ setWallOpen(f,w,e.target.checked); }); };
+  if(ls.sides.length>1){
+    document.getElementById("lenRoomSel").onchange=e=>{ lengthRoom=e.target.value; renderInspector(); };
+  }
   document.getElementById("endSel").value = movingEnd;
   document.getElementById("endSel").onchange = e=>{ movingEnd=e.target.value; render(); };
   const apply=()=>applyLength(w);
@@ -115,7 +153,7 @@ function renderWallInspector(f, body){
     let mid;
     commit(()=>{ mid=divideWall(f,w); sel={type:"point",id:mid}; });
   };
-  setReadout("Wall", fmtFt(len));
+  setReadout("Wall", ls.degenerate ? `${fmtFt(dispLen)} (centerline — interior geometry unavailable)` : fmtFt(dispLen));
 }
 
 /* ---------- wall openings (ARCHITECTURE.md item 4) ----------
@@ -427,21 +465,146 @@ function nudgeRoom(r, dir){
   });
 }
 
+/* Move the endpoint picked by `movingEnd` so the wall's CENTERLINE length
+   becomes `targetCenterline`, sliding it along the wall's own current
+   direction — this is the one place that actually moves a wall-length
+   endpoint; both length-edit modes below route through it so there is a
+   single "move an endpoint to make the centerline this long" function
+   rather than two near-duplicate implementations. */
+function setWallCenterlineLength(f, w, targetCenterline){
+  const a=ptOf(f,w.a), b=ptOf(f,w.b);
+  let dx=b.x-a.x, dy=b.y-a.y; const cur=Math.hypot(dx,dy);
+  if(cur<1e-6){ dx=1; dy=0; } else { dx/=cur; dy/=cur; }
+  if(movingEnd==="b"){ b.x=a.x+dx*targetCenterline; b.y=a.y+dy*targetCenterline; }
+  else               { a.x=b.x-dx*targetCenterline; a.y=b.y-dy*targetCenterline; }
+}
+
+/* ---------- inside-length solve (bisection) ----------
+   In "inside" mode, typing a length means "make THIS ROOM's interior clear
+   length along this wall equal this value" — not the centerline length.
+
+   HISTORY: an earlier version of this converted the typed value via a single
+   linear delta (delta = currentCenterline - currentInside, target =
+   typed + delta), reasoning that sliding the endpoint along the wall's own
+   direction leaves both end corners' miter geometry untouched. That
+   reasoning is only true when the moving endpoint is a non-turning
+   (collinear, same-thickness) continuation of the wall — e.g. one half of a
+   divided wall. For a GENUINE turning corner it's wrong: the OTHER wall
+   sharing that endpoint has its own far end fixed in space, so sliding the
+   shared endpoint along this wall's direction rotates that other wall,
+   which is a nonlinear effect on the interior-corner intersection. Verified
+   numerically: extending one wall of a plain rectangle made the gap drift
+   (0.5 -> 0.57 -> 0.70 ft across repeated edits) instead of staying put —
+   a real, non-negligible error for a feature whose point is precision.
+
+   FIX: don't derive a formula for the nonlinear case — search for the
+   answer directly against the real, already-correct forward computation
+   (wallSides/roomInterior). solveCenterlineForInside moves the endpoint to
+   a candidate centerline length the exact same way setWallCenterlineLength
+   always has, re-measures the room's actual interior length, and narrows
+   in by bisection. This assumes interior length is monotonic in centerline
+   length (true for any sane, non-self-intersecting room shape) — rather
+   than assuming it blindly, a wide log-spaced sample pass both hunts for a
+   bracket containing the target AND checks every consecutive sample moves
+   the same direction; a monotonicity violation (or no bracket found at all)
+   makes it bail out (return null) instead of returning a wrong answer. */
+const LENGTH_SOLVE_TOL = 1e-7;      // ft — tighter than fmtFt's inch rounding
+const LENGTH_SOLVE_SAMPLES = 24;    // log-spaced bracket/monotonicity probes
+const LENGTH_SOLVE_ITERS = 60;      // bisection passes once bracketed (far more than needed for 1e-7 ft)
+
+/* Solve for the centerline length of wall `w` that makes `roomId`'s interior
+   length along it equal `targetInside`, given the wall's current centerline
+   length `currentCenterline`. Mutates the wall's endpoints during the search
+   (always resetting to the ORIGINAL geometry before each trial, so floating-
+   point error can't accumulate across trials) and always restores them
+   before returning — the caller performs the one real mutation (and the one
+   commit()) with the solved value. Returns the solved length, or null if no
+   bracket could be found or the sampled relationship isn't monotonic. */
+function solveCenterlineForInside(f, w, roomId, targetInside, currentCenterline){
+  const a=ptOf(f,w.a), b=ptOf(f,w.b);
+  const a0={x:a.x,y:a.y}, b0={x:b.x,y:b.y};
+  function insideAt(L){
+    if(!(L>1e-6)) return null;
+    a.x=a0.x; a.y=a0.y; b.x=b0.x; b.y=b0.y;      // always start from the ORIGINAL geometry
+    setWallCenterlineLength(f, w, L);
+    const s=wallSides(f, w).find(x=>x.room.id===roomId);
+    return (s && s.side && s.side.len>1e-9) ? s.side.len : null;
+  }
+  function restore(){ a.x=a0.x; a.y=a0.y; b.x=b0.x; b.y=b0.y; }
+
+  const base=Math.max(currentCenterline, 1);
+  const Ls=[];
+  for(let i=-LENGTH_SOLVE_SAMPLES/2; i<=LENGTH_SOLVE_SAMPLES/2; i++){
+    const L=base*Math.pow(1.6, i);
+    if(L>1e-6) Ls.push(L);
+  }
+  const samples=[];
+  for(const L of Ls){ const v=insideAt(L); if(v!=null) samples.push({L, v}); }
+  if(samples.length<2){ restore(); return null; }
+
+  let dir=0;
+  for(let i=1;i<samples.length;i++){
+    const d=samples[i].v-samples[i-1].v;
+    if(Math.abs(d)<1e-9) continue;
+    const s=d>0?1:-1;
+    if(dir===0) dir=s;
+    else if(s!==dir){ restore(); return null; }        // not monotonic over the sampled range — bail
+  }
+  if(dir===0){ restore(); return null; }                // flat everywhere — nothing to search for
+
+  let lo=null, hi=null;
+  for(let i=0;i<samples.length-1;i++){
+    const A=samples[i], B=samples[i+1];
+    const within = dir>0 ? (A.v<=targetInside && targetInside<=B.v) : (A.v>=targetInside && targetInside>=B.v);
+    if(within){ lo=A; hi=B; break; }
+  }
+  if(!lo){ restore(); return null; }                    // target is outside the sampled range — don't extrapolate
+
+  let loL=lo.L, hiL=hi.L;
+  for(let i=0;i<LENGTH_SOLVE_ITERS;i++){
+    const midL=(loL+hiL)/2;
+    const v=insideAt(midL);
+    if(v==null){ restore(); return null; }
+    if(Math.abs(v-targetInside)<=LENGTH_SOLVE_TOL){ restore(); return midL; }
+    const midIsHigh = dir>0 ? v>targetInside : v<targetInside;
+    if(midIsHigh) hiL=midL; else loL=midL;
+  }
+  restore();
+  return (loL+hiL)/2;
+}
+
 /* Wall length edit. Deliberately does NOT touch the wall's openings: their
    stored `along`/`width` stay as they are and rendering clamps what it draws
    to the new length (displayedOpening in js/model.js), so shortening a wall
-   and lengthening it again puts every opening back exactly where it was. */
+   and lengthening it again puts every opening back exactly where it was.
+
+   In "inside" mode, the typed value is the room's desired interior clear
+   length; solveCenterlineForInside (above) finds the exact centerline
+   length that produces it by bisection against the real geometry. If that
+   search can't bracket/converge (a pathological, non-monotonic shape —
+   should be very rare for a real floor plan), fall back to the simple
+   linear delta as a LAST RESORT: it's only approximate off a genuine
+   turning corner, so the readout says so rather than silently landing
+   close-but-not-exact with no indication. */
 function applyLength(w){
   const f=activeLevel();
   const val=parseLen(document.getElementById("lenInput").value);
   if(isNaN(val)||val<=0) return;
-  const a=ptOf(f,w.a), b=ptOf(f,w.b);
-  let dx=b.x-a.x, dy=b.y-a.y; const cur=Math.hypot(dx,dy);
-  if(cur<1e-6){ dx=1; dy=0; } else { dx/=cur; dy/=cur; }
-  commit(()=>{
-    if(movingEnd==="b"){ b.x=a.x+dx*val; b.y=a.y+dy*val; }
-    else               { a.x=b.x-dx*val; a.y=b.y-dy*val; }
-  });
+  const ls=wallLengthState(f, w);   // fresh, pre-edit state — never cached
+  let target = val, approximate=false;
+  if(ls.mode==="inside" && ls.cur){
+    const solved = solveCenterlineForInside(f, w, ls.cur.room.id, val, ls.centerline);
+    if(solved!=null && solved>0){
+      target = solved;
+    } else {
+      const delta = ls.centerline - ls.cur.side.len;
+      target = val + delta;
+      approximate = true;
+    }
+  }
+  if(target<=0) return;
+  commit(()=>{ setWallCenterlineLength(f, w, target); });
+  if(approximate) setReadout("Wall", "approximate: this wall's interior geometry couldn't be solved exactly here");
 }
 
 /* Delete a point. Rooms that still have >=3 corners afterward just lose the

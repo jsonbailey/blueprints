@@ -5,7 +5,15 @@ let data = freshData();             // {levels:[level, ...], activeLevelId}
 const ORIGINAL = JSON.stringify(stripIdx(data));
 let sel = {type:null, id:null};
 const view = {scale:14, ox:120, oy:80};   // px per ft, screen offset
-const opts = {shadow:true, dims:true, labels:true, grid:true, snap:0.25, snapConnect:true};
+/* lengthMode is a pure session view preference (like shadow/dims/labels/
+   grid/snap/snapConnect above) — never persisted to the saved-plan schema
+   (see js/persist.js LEVEL_FIELDS, which doesn't mention `opts` at all).
+   "inside" (the default, matching the shipped per-room interior dimension
+   labels — see js/render.js) shows/edits a wall's INTERIOR clear length
+   (drywall face to drywall face, via roomInterior/wallSides); "centerline"
+   shows/edits the raw endpoint-to-endpoint distance (the original, still
+   available behavior). */
+const opts = {shadow:true, dims:true, labels:true, grid:true, snap:0.25, snapConnect:true, lengthMode:"inside"};
 const history = [];
 
 function activeLevel(){ return data.levels.find(l=>l.id===data.activeLevelId) || data.levels[0]; }
