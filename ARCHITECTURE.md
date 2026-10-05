@@ -23,6 +23,8 @@ behavior belongs in SPEC.md).
    *Shipped* (free placement, then anchors) — see SPEC.md; the section
    below stays until it's trimmed to whatever later items still reuse.
 6. **Local storage autosave** — debounced, reuses `schemaVersion`/`migrateData`.
+   *Shipped* — see SPEC.md; "Item 6" below documents the storage shape item
+   7 builds its UI on top of.
 7. **Hamburger menu + multi-project switcher** — backed by item 6.
 
 (Numbering starts at 2.5 because earlier items have shipped and moved to
@@ -46,7 +48,7 @@ messages.)
 | `js/tools.js` | Interaction state machine: one `interaction = {kind, ...}` object + a handler table keyed by `kind`, covering corner/wall/room drags, pan, and the `N`/`Shift+N` room-drawing tools. Items 3 and 5 add more `kind`s here (a pick-wall mode, etc.) rather than growing `js/app.js`'s dispatch. |
 | `js/catalog.js` | Extensible array of placeable types. Today `OPENING_TYPES` (`{type, label, defaultWidth, fields, draw(g,k)}`, item 4); item 5 adds room fixtures (`{type, label, w, d, draw}`). Loaded after `state.js`, before `render.js`/`inspector.js`. |
 | `js/geometry.js` *(optional, item 3)* | Pure math apart from topology: signed area, offset-line intersection, point-in-polygon, self-intersection checks. Needed by thickness, drawing-tool validation, and object room-reparenting. |
-| `js/storage.js` *(item 6)* | Or fold into `persist.js` — local-storage autosave, reusing `migrateData`. |
+| `js/storage.js` | Local-storage autosave data layer (item 6): `blueprints:*` key access, startup project resolution, the debounced write. Loaded right after `persist.js` (needs `stripIdx`/`loadData`/`migrateData`) and before `state.js` (whose `markDirty` calls into it). |
 | `js/nav.js` *(item 7)* | Hamburger menu / project switcher. |
 | `test/` | Committed test suite (`npm test`, zero dependencies). Add tests here alongside any change to testable logic (model, geometry, persistence, interaction handlers) — see CONTRIBUTING.md. |
 
@@ -228,3 +230,91 @@ level.objects = [{
   anchoring once item 3/4 land. Never ship anchors measured from the wall
   centerline and redefine their meaning later — that silently breaks saved
   data.
+
+## Item 6 — local storage autosave
+
+**Status:** shipped (see SPEC.md). `js/storage.js` is a data layer built to
+already support multiple distinct projects, even though this item ships no
+UI for switching between them — that's item 7, built on top of what's here
+without needing a migration.
+
+**Storage shape**, every key namespaced `blueprints:` (this app can run
+from `file://`, where every local file on the machine shares one
+`localStorage` origin, so the prefix avoids a collision with an unrelated
+local page):
+
+- `blueprints:projects` → `[{id, name, updatedAt}, ...]` — a lightweight
+  index, just enough to list projects without loading each one's full data.
+  Nothing in item 6 reads it for any purpose beyond keeping it in sync; it
+  exists for item 7's UI.
+- `blueprints:project:<id>` → the full saved-plan JSON for that project,
+  in the **exact same shape** `js/app.js`'s `btnSave` handler already
+  produces (`{name, ...stripIdx(data)}`). No second persistence shape was
+  invented; `stripIdx`/`loadData`/`migrateData` (`js/persist.js`) are reused
+  as-is for serializing and deserializing.
+- `blueprints:currentProjectId` → which project id is "open" right now, so
+  reloading the page resumes it.
+
+**Startup** (`loadStartupProject()`): if `blueprints:currentProjectId`
+names a project that's both listed in `blueprints:projects` and has a
+readable `blueprints:project:<id>` blob, that blob is loaded through
+`loadData`/`migrateData` — the same upgrade path opening an old file
+already uses, so an autosaved blob from an older schema version upgrades
+transparently. Otherwise (first visit ever, or anything in that chain is
+missing/corrupt) it mints a fresh project id, writes its index entry, sets
+it current, and returns a plain `freshData()`. Every `localStorage` read
+is wrapped in `try`/`catch` — corrupt JSON, a missing key, or
+`localStorage` being unavailable at all (private browsing, disabled
+storage) all fall back to "start fresh," never crash page load.
+`js/app.js` assigns the result onto the live `data`/`projectName` globals
+itself (`js/storage.js` never reads or writes those two directly at
+startup) — the same split of responsibility `loadData()` already has with
+its callers.
+
+**Debounced write**: hooked into `js/state.js`'s `markDirty()`, which
+`commit()` already calls — this covers every `commit()`-driven mutation
+and every `markDirty()`-only change (e.g. switching the active level) in
+one place. The one path that bypasses `commit()`/`markDirty()` entirely is
+the project name (`setProjectName`/the `#projectName` blur handler in
+`js/app.js`, which mutate it directly with no SVG re-render needed) — that
+path gets its own explicit `triggerAutosave()` call, documented in-line
+where it's added, so a rename doesn't silently fail to persist until some
+unrelated mutation happens to also fire. `AUTOSAVE_DEBOUNCE_MS` (1500ms) is
+a real exported constant, not a magic number buried in a `setTimeout`
+call. Each actual (post-debounce) save writes the current project's full
+data to `blueprints:project:<id>` (same shape as `btnSave`) and updates
+that project's `blueprints:projects` entry (`name` + `updatedAt`) so the
+index never drifts out of sync with what was actually saved.
+
+**Error handling on write**: `localStorage.setItem` can throw
+(`QuotaExceededError`, Safari private-browsing restrictions, etc.) —
+every write is wrapped and falls back to a `console.warn`, never a thrown
+error; the in-memory mutation that triggered the save has already
+succeeded regardless of whether the persistence attempt did. No "autosave
+failed" UI indicator was built (optional per the item's scope, and it would
+need more design/UI work than the rest of this item to do well) — the
+`console.warn` is the whole error surface for now. No "autosave succeeded"
+UI indicator was built either, for the same reason.
+
+**Explicit, file-based Save/Open is untouched**: `btnSave`/`btnLoad`/the
+file-input flow stay exactly as they were — opening a file replaces `data`/
+`projectName` the same way it always did, through `loadData`/
+`commitCaptured`/`markDirty`, which is already wired into the autosave
+hook with no changes needed. Opening a file does not create a new project
+slot: it overwrites what's open right now, in memory immediately and in
+`localStorage` on the next debounced tick, under the *same*
+`currentProjectId`.
+
+**Explicitly out of scope** (do not build without a separate task):
+
+- Any UI for creating a second project, switching projects, or deleting
+  one — item 7.
+- **Multi-tab synchronization or conflict resolution.** Two tabs with the
+  same project open, both autosaving, is last-write-wins: whichever tab's
+  debounced write lands last silently overwrites the other. This is an
+  **accepted limitation**, not an oversight — no `storage`-event
+  listening, merge logic, or cross-tab locking exists here, and none
+  should be added without a real design for it.
+- Any change to the saved-plan JSON shape itself (`schemaVersion`,
+  migrations) — this item is purely about *where* that existing shape is
+  read from/written to, not what's in it.
