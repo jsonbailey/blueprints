@@ -182,6 +182,18 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   rooms (boolean difference), adding boundary points so they conform;
   fully-covered rooms are removed; keeps the largest piece if a cut would
   split/hole a room.
+- **Join tool**: the room inspector lists every room sharing a wall with the
+  selected one in a dropdown, with a "Join" button that merges the two into
+  a single room (boolean union) — the selected room survives (keeps its
+  name/kind/lock state), the other is removed, and any of its furniture is
+  reparented to the survivor. The wall that was between them is removed
+  along with anything on it (a door/window there is lost, same as Cut's
+  openings-on-recreated-edges gap); a wall property on an outer wall that
+  isn't touched by the merge (thickness override, openings) is kept. Refused
+  — with an explanatory message, nothing changes — if either room is locked,
+  if the two rooms don't actually share an edge (not touching, or touching
+  only at a corner), or if joining them would leave a hole (only possible
+  with interlocking/C-shaped rooms). Undoable.
 - **Lock geometry**: freezes a room (detaches it, blocks moving it/its
   walls/corners, excludes it from snapping/welding) so moving a connected
   room can't reshape it.
@@ -240,7 +252,8 @@ coordinate/length status readout.
 - Angle constraints (90° or typed) are one-shot, not persistent constraints
   — a live solver isn't implemented.
 - Openings are lost on edges that the cut tool recreates, and can't span a
-  T-junction (a split point always lands them on one side).
+  T-junction (a split point always lands them on one side). Joining two
+  rooms loses any opening on the wall between them, for the same reason.
 - Cut keeps only the largest piece when a cut would split a room or create
   a hole (the single-loop room model can't hold holes/multiple pieces).
 - Point/room-id and level-id counters are synced on every load/build
