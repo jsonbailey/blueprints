@@ -376,6 +376,7 @@ test("length edit: a shortened wall clamps the DISPLAYED opening; stored data is
     const f = setupTwoRooms();
     const w = W(f,"a1","a2");
     const o = addOpening(f, w, {type:"door", along:8});     // span 6.5..9.5
+    opts.lengthMode = "centerline";   // this test is about centerline length / opening clamping, not inside-length mode
     sel = {type:"wall", id:w.id}; renderInspector();
     movingEnd = "b";
     const setLen = v => { document.getElementById("lenInput").value = v; applyLength(w); };

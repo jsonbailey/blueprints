@@ -53,20 +53,55 @@ function wireThicknessPicker(selEl, rowEl, inputEl, applyEl, pick){
   inputEl.onkeydown=e=>{ if(e.key==="Enter"){ e.preventDefault(); apply(); } };
 }
 
+/* ---------- wall length display/edit mode (opts.lengthMode) ----------
+   "centerline" is the raw endpoint-to-endpoint distance, always well-defined.
+   "inside" shows/edits the interior clear length of ONE adjacent room, via
+   wallSides() (js/model.js) — already computed by the interior-offset
+   geometry from a prior task. A wall borders either one room (exterior wall:
+   no choice to make) or two (a shared interior wall: pick which room's
+   length is shown, exactly like cornerRoom's pattern for a shared corner's
+   angle — `lengthRoom` remembers the choice, reset to the first available
+   side whenever it doesn't apply to the current wall).
+   Falls back to "centerline" (with `degenerate:true`) if wallSides() finds
+   no USABLE side at all for this wall — shouldn't happen for a real wall,
+   but a room's roomInterior can degenerate (near-collapsed offset geometry);
+   never crash or show nonsense, same spirit as other degenerate-geometry
+   fallbacks in this codebase.
+   Returns {mode, len (the value to show/accept), centerline, sides (the
+   usable wallSides() entries), cur (the chosen side, or null), degenerate}. */
+function wallLengthState(f, w){
+  const a=ptOf(f,w.a), b=ptOf(f,w.b);
+  const centerline=Math.hypot(b.x-a.x,b.y-a.y);
+  if(opts.lengthMode!=="inside") return {mode:"centerline", len:centerline, centerline, sides:[], cur:null};
+  const sides=wallSides(f,w).filter(s=>s.side && s.side.len>1e-6);
+  if(!sides.length) return {mode:"centerline", len:centerline, centerline, sides:[], cur:null, degenerate:true};
+  if(!lengthRoom || !sides.some(s=>s.room.id===lengthRoom)) lengthRoom=sides[0].room.id;
+  const cur=sides.find(s=>s.room.id===lengthRoom) || sides[0];
+  return {mode:"inside", len:cur.side.len, centerline, sides, cur};
+}
+
 function renderWallInspector(f, body){
   const w=wallById(f,sel.id); if(!w){clearSel();return;}
   const a=ptOf(f,w.a), b=ptOf(f,w.b);
-  const len=Math.hypot(b.x-a.x,b.y-a.y);
   const horiz = Math.abs(b.x-a.x) >= Math.abs(b.y-a.y);
+  const ls = wallLengthState(f, w);
+  const len = ls.centerline;      // the ACTUAL wall length — openings placement below needs this, not the display value
+  const dispLen = ls.len;
+  const lenRoomPicker = ls.sides.length>1
+    ? `<select id="lenRoomSel" style="margin-bottom:6px">${ls.sides.map(s=>
+        `<option value="${esc(s.room.id)}" ${s.room.id===ls.cur.room.id?"selected":""}>${esc(s.room.name)}</option>`).join("")}</select>`
+    : "";
   const open=isOpenWall(f,w), override=wallThicknessOverride(f,w), eff=effThickness(f,w);
   const thkChoice = override==null ? "default" : presetIdFor(override);
   const thkSrc = open ? "open — no wall" : (override==null ? "level default" : "override");
   body.innerHTML = `
     <div class="kicker">WALL · ${w.id}</div>
-    <span class="field-label">Length</span>
-    <div class="bigval">${fmtFt(len)}</div>
+    <span class="field-label">Length${ls.mode==="inside"?` (inside${ls.sides.length>1?", "+esc(ls.cur.room.name):""})`:""}</span>
+    ${lenRoomPicker}
+    <div class="bigval">${fmtFt(dispLen)}</div>
+    ${ls.degenerate?`<p class="muted">This wall's interior geometry isn't usable right now, so length is shown/edited as centerline instead.</p>`:""}
     <span class="field-label">Set length (e.g. 13' 7" or 13.58)</span>
-    <input type="text" id="lenInput" value="${fmtFt(len)}">
+    <input type="text" id="lenInput" value="${fmtFt(dispLen)}">
     <div class="row" style="margin-top:10px">
       <label>Move which end?</label>
       <select id="endSel" style="flex:0 0 120px">
@@ -104,6 +139,9 @@ function renderWallInspector(f, body){
       commit(()=>{ setWallThickness(f,w,t); });
     });
   document.getElementById("wallOpen").onchange=e=>{ commit(()=>{ setWallOpen(f,w,e.target.checked); }); };
+  if(ls.sides.length>1){
+    document.getElementById("lenRoomSel").onchange=e=>{ lengthRoom=e.target.value; renderInspector(); };
+  }
   document.getElementById("endSel").value = movingEnd;
   document.getElementById("endSel").onchange = e=>{ movingEnd=e.target.value; render(); };
   const apply=()=>applyLength(w);
@@ -115,7 +153,7 @@ function renderWallInspector(f, body){
     let mid;
     commit(()=>{ mid=divideWall(f,w); sel={type:"point",id:mid}; });
   };
-  setReadout("Wall", fmtFt(len));
+  setReadout("Wall", ls.degenerate ? `${fmtFt(dispLen)} (centerline — interior geometry unavailable)` : fmtFt(dispLen));
 }
 
 /* ---------- wall openings (ARCHITECTURE.md item 4) ----------
@@ -427,21 +465,61 @@ function nudgeRoom(r, dir){
   });
 }
 
+/* Move the endpoint picked by `movingEnd` so the wall's CENTERLINE length
+   becomes `targetCenterline`, sliding it along the wall's own current
+   direction — this is the one place that actually moves a wall-length
+   endpoint; both length-edit modes below route through it so there is a
+   single "move an endpoint to make the centerline this long" function
+   rather than two near-duplicate implementations. */
+function setWallCenterlineLength(f, w, targetCenterline){
+  const a=ptOf(f,w.a), b=ptOf(f,w.b);
+  let dx=b.x-a.x, dy=b.y-a.y; const cur=Math.hypot(dx,dy);
+  if(cur<1e-6){ dx=1; dy=0; } else { dx/=cur; dy/=cur; }
+  if(movingEnd==="b"){ b.x=a.x+dx*targetCenterline; b.y=a.y+dy*targetCenterline; }
+  else               { a.x=b.x-dx*targetCenterline; a.y=b.y-dy*targetCenterline; }
+}
+
 /* Wall length edit. Deliberately does NOT touch the wall's openings: their
    stored `along`/`width` stay as they are and rendering clamps what it draws
    to the new length (displayedOpening in js/model.js), so shortening a wall
-   and lengthening it again puts every opening back exactly where it was. */
+   and lengthening it again puts every opening back exactly where it was.
+
+   In "inside" mode (opts.lengthMode), the typed value is the DESIRED
+   interior clear length for the room picked by wallLengthState/lengthRoom,
+   not the centerline length — convert it via a delta computed fresh, right
+   here, from the wall's CURRENT (pre-edit) geometry:
+       delta = currentCenterlineLength - currentInsideLengthForSelectedRoom
+       targetCenterlineLength = typedInsideValue + delta
+   Why this is exact, not an approximation: setWallCenterlineLength moves
+   only the picked endpoint, sliding it along the wall's OWN existing
+   direction — it never touches the room's other corners, and the corner at
+   the end that does NOT move is obviously unaffected since that point never
+   moves. At the end that DOES move, the wall's own offset (interior-face)
+   line is anchored by the FIXED endpoint and the (preserved) direction, so
+   it doesn't move either; what can move is the interior corner where it
+   meets the NEXT wall's offset line. That intersection stays on this fixed
+   offset line, slid by exactly the same amount the endpoint is slid,
+   whenever the next wall's own offset line doesn't rotate as the endpoint
+   moves along the shared wall's direction — true whenever that end isn't a
+   genuine turn for the point of view of the room picked (e.g. the far side
+   of a divided/subdivided straight run, or most real wall-length edits in
+   practice). The gap between centerline length and this room's interior
+   length at each end is therefore unchanged by the edit, so the delta
+   computed before the edit remains valid after it, including through a
+   second, third, ... edit in a row, since each call recomputes it fresh
+   from the CURRENT geometry rather than reusing a stale value. */
 function applyLength(w){
   const f=activeLevel();
   const val=parseLen(document.getElementById("lenInput").value);
   if(isNaN(val)||val<=0) return;
-  const a=ptOf(f,w.a), b=ptOf(f,w.b);
-  let dx=b.x-a.x, dy=b.y-a.y; const cur=Math.hypot(dx,dy);
-  if(cur<1e-6){ dx=1; dy=0; } else { dx/=cur; dy/=cur; }
-  commit(()=>{
-    if(movingEnd==="b"){ b.x=a.x+dx*val; b.y=a.y+dy*val; }
-    else               { a.x=b.x-dx*val; a.y=b.y-dy*val; }
-  });
+  const ls=wallLengthState(f, w);   // fresh, pre-edit state — never cached
+  let target = val;
+  if(ls.mode==="inside" && ls.cur){
+    const delta = ls.centerline - ls.cur.side.len;
+    target = val + delta;
+  }
+  if(target<=0) return;
+  commit(()=>{ setWallCenterlineLength(f, w, target); });
 }
 
 /* Delete a point. Rooms that still have >=3 corners afterward just lose the
