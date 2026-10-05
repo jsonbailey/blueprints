@@ -76,7 +76,17 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   same). A locked room is a hard boundary: it never moves, and an unlocked
   room still welded to it stays pinned at the shared corner.
 - Edit a wall's exact length (choose which end stays fixed); edit a
-  corner's X/Y; nudge rooms by the snap step.
+  corner's X/Y; nudge rooms by the snap step. A View toggle switches
+  between **centerline** length (endpoint to endpoint — the only option
+  before this toggle existed) and **inside** length (a chosen adjacent
+  room's interior clear length along that wall; a shared wall lets you pick
+  which side). Typing a desired inside length solves for the exact
+  centerline length that produces it (by search against the real interior
+  geometry, not an approximation), so it's exact even at a corner where the
+  relationship between the two lengths isn't linear. The toggle also
+  controls the on-canvas dimension labels (one per wall at centerline, or
+  one per adjacent room at interior length) and is a session preference,
+  not saved with the plan.
 - Draw a room: `N` is the rectangle tool (click two opposite corners);
   `Shift+N` is the freeform tool (click each corner — segments lock to
   horizontal/vertical unless Ctrl/Cmd is held — and click the first corner
