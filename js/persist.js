@@ -113,6 +113,10 @@ function loadData(raw){
       const v = l[k];
       out[k] = Array.isArray(v) ? v.map(item=>Array.isArray(item.loop) ? {...item, loop:[...item.loop]} : {...item}) : [];
     });
+    // object anchors (item 5): deep-copied + normalized (a malformed one
+    // loads as a free object); x/y/rot are kept as saved — they are the
+    // last-resolved cache, and markDirty()'s resolveObjects refreshes them
+    out.objects.forEach(o=>{ o.anchor = sanitizeAnchor(o.anchor); });
     out.wallProps = loadWallProps(l.wallProps);
     out.defaultThickness = isValidThickness(l.defaultThickness) ? l.defaultThickness : DEFAULT_WALL_THICKNESS;
     return indexLevel(out);   // → deriveWalls, which also prunes wallProps keys that aren't real walls

@@ -267,24 +267,28 @@ test("negative: reshaping a room (dragging one corner) does NOT move a free obje
   assert.equal(r.after.y, r.before.y, "a corner-drag reshape must leave a free object's y in place");
 });
 
-test("negative: dragging a whole-room translate never carries an ANCHORED object (reserved field check)", () => {
-  // Free-placement half only — anchor is always null, so there's no real
-  // anchored-object behavior to test yet. This just locks in that an object
-  // with a non-null anchor (as the later task will produce) is excluded from
-  // the carry-along set, so wiring that task in later doesn't silently double
-  // -move an anchored object.
+test("negative: a whole-room translate never CARRIES an anchored object — it follows its wall exactly once", () => {
+  // An anchored object is excluded from the carry-along set (objStarts); it
+  // still ends up translated by the room's delta, but only because its wall
+  // moved and resolveObjects re-derived it — never both (that would move it
+  // by twice the delta). test/anchors.test.js covers this in more depth.
   const { run } = loadApp();
   const r = vmRun(run, `
     const f = setupOneRoom();
-    let o; commit(()=>{ o = addObject(f, "table", 5, 5); o.anchor = {wall:"x|y", edge:"back", along:1, gap:1}; });
+    let o; commit(()=>{ o = addObject(f, "table", 5, 5); anchorObject(f, o, f.walls[0] ? wallKeyOf(f.walls[0]) : null); });
+    const anchored = !!o.anchor;
     const before = { x:o.x, y:o.y };
     startDragRoom({ clientX: 0, clientY: 0, stopPropagation(){}, pointerId: 1 }, "roomA");
-    interactionHandlers.room.move(interaction, { clientX: 50, clientY: 50, altKey: true });
+    const carried = interaction.objStarts.map(s=>s.id);
+    interactionHandlers.room.move(interaction, { clientX: 5*view.scale, clientY: 3*view.scale, altKey: true });
     interactionHandlers.room.end(interaction);
-    return { before, after: { x:o.x, y:o.y } };
+    return { anchored, carried, id:o.id, before, after: { x:o.x, y:o.y }, stillAnchored: !!o.anchor };
   `);
-  assert.equal(r.after.x, r.before.x);
-  assert.equal(r.after.y, r.before.y);
+  assert.ok(r.anchored, "sanity: the object was anchored");
+  assert.ok(!r.carried.includes(r.id), "anchored object must not be in the carry-along set");
+  assert.ok(Math.abs(r.after.x - r.before.x - 5) < 1e-6, "moved by the room delta once (not twice)");
+  assert.ok(Math.abs(r.after.y - r.before.y - 3) < 1e-6, "moved by the room delta once (not twice)");
+  assert.ok(r.stillAnchored);
 });
 
 /* ---------------- deleting a room orphans (doesn't delete) its objects ---------------- */

@@ -34,8 +34,17 @@ function commitCaptured(d){
 /* Re-render chokepoint: the other half of "something changed" — re-draws the
    plan and the inspector. Also called directly (without snapshot()) by
    callers that mutate transient UI state (selection, level switch) that
-   isn't itself undoable. */
+   isn't itself undoable.
+   Also the hook for post-mutation passes: resolveObjects() (js/model.js)
+   re-derives every anchored object's cached x/y/rot from its wall (and
+   unanchors any whose wall is gone) BEFORE drawing. Every commit(), undo,
+   load/reset and drag end funnels through here, so this is the one place
+   the rest of the code can trust has already run. It is idempotent and
+   cheap, so running it on a selection-only markDirty is harmless; drags
+   that move geometry live call resolveObjects() themselves before render(),
+   and render() itself never does. */
 function markDirty(){
+  data.levels.forEach(resolveObjects);
   render(); renderInspector();
 }
 /* Wrap a single undoable mutation: snapshot the pre-state, run the mutation,

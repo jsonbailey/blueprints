@@ -412,7 +412,8 @@ function mergeWallProps(list){
   return out;
 }
 
-/* Re-key wall references (today: wallProps; item 5 adds object anchors) across
+/* Re-key wall references (wallProps + its openings, and item 5's object
+   anchors via _remapAnchors — see there for the per-op anchor rules) across
    a topology change. Must run AFTER room loops are rewritten but BEFORE the
    deriveWalls() that ends the op (whose prune removes the now-dead old keys),
    and while every old endpoint point still exists in f.points (callers gc
@@ -456,6 +457,10 @@ function mergeWallProps(list){
      SEVERAL new keys (deleting a corner on a wall shared by two rooms),
      each opening goes to the target wall nearest its center, never both. */
 function remapWallRefs(f, op){
+  // object anchors (item 5) first: same op, same rebaseAlong math, and it
+  // must not be skipped by the early returns below (a wall with no
+  // wallProps entry can still host anchored objects)
+  _remapAnchors(f, op);
   if(!f.wallProps) f.wallProps={};
   const wp=f.wallProps;
   if(op.kind==="split"){
@@ -755,19 +760,14 @@ function makeLevel(name, rects){
 }
 
 /* ---------- room-relative object placement (ARCHITECTURE.md item 5) ----------
-   FREE-PLACEMENT HALF ONLY: wall-anchored placement, resolveObjects(), and
-   the "Unanchor" action are a separate, later task. `anchor` is always
-   `null` on every object this file creates — the field is just reserved so
-   that later task's data shape is already in place and doesn't need a
-   migration of its own.
-
    level.objects = [{id, type, roomId, w, d, mirror, x, y, rot, anchor}].
-   x/y/rot are world coordinates/degrees and are authoritative for a free
-   object (an anchored object would instead cache resolveObjects()' output
-   here — not relevant yet). w/d are feet, PER-INSTANCE (the catalog's w/d
-   are only a starting box — addObject below copies them in, but the user
-   can resize afterward). mirror is a plain boolean flip. roomId is which
-   room's reparenting currently has it (null = not inside any room). */
+   x/y/rot are world coordinates/degrees. For a FREE object (anchor null)
+   they are authoritative; for an ANCHORED object they are a cache rewritten
+   by resolveObjects() (see "wall anchors" below) and never edited directly.
+   w/d are feet, PER-INSTANCE (the catalog's w/d are only a starting box —
+   addObject below copies them in, but the user can resize afterward).
+   mirror is a plain boolean flip. roomId is which room's reparenting
+   currently has it (null = not inside any room). */
 
 /* Even-odd point-in-polygon test. `pts` = [{x,y}, ...] (a closed loop, first
    point not repeated at the end). Standard ray-casting; boundary behavior is
@@ -819,6 +819,229 @@ function removeObject(f, id){
   const n=f.objects.length;
   f.objects = f.objects.filter(o=>o.id!==id);
   return f.objects.length!==n;
+}
+
+/* ---------- wall anchors (ARCHITECTURE.md item 5, anchored half) ----------
+   anchor = {wall, edge, along, gap}:
+   - wall:  canonical wallKey "lo|hi" (same identity as wallProps/openings).
+   - edge:  which LOCAL edge of the object's box faces the wall.
+   - along: the object's CENTER along the wall, in feet from `lo` — exactly
+            the opening convention (wallFrame / alongToWorld), so anchors
+            re-key through remapWallRefs with the same rebaseAlong math.
+   - gap:   feet, >= 0, from the wall's INTERIOR face on roomId's side
+            (roomInterior(...).edges[i]: centerline + n*half) to `edge`.
+
+   EDGE NAMES, in the object's own local frame — the one objectLocalToScreen
+   (js/render.js) draws through: local lx ∈ [-w/2, w/2] is the width axis,
+   ld ∈ [-d/2, d/2] the depth axis, and at rot=0 (no mirror) lx → world +x,
+   ld → world +y. Then
+       back  = the ld = -d/2 edge   (outward local normal (0,-1))
+       front = the ld = +d/2 edge   (outward local normal (0,+1))
+       left  = the lx = -w/2 edge   (outward local normal (-1,0))
+       right = the lx = +w/2 edge   (outward local normal (+1,0))
+   measured BEFORE mirroring (mirror flips lx before rotating, so a mirrored
+   object's "left" edge is drawn where an unmirrored one's "right" is;
+   resolve accounts for that, so the named edge always faces the wall).
+
+   RESOLVE: with P = the wall centerline point at `along`, n = roomId's
+   inward unit normal of that wall and half = effThickness/2,
+       center = P + n * (half + gap + h)      h = d/2 (back/front), w/2 (left/right)
+       rot    = the angle that turns the edge's (mirrored) outward local
+                normal onto -n, i.e. the edge faces the wall squarely and the
+                box extends from it INTO the room.
+   Hand-worked check (test/anchors.test.js's first test): horizontal wall
+   along +x at y = 0, room below it (n = (0,1)), thickness 0.5 (half 0.25),
+   object w=2 d=4, edge "back", gap 0, along 5:
+       interior face at y = 0.25; back edge (ld = -2 at rot 0 → world y - 2)
+       must sit on it → o.y = 0.25 + 0 + 2 = 2.25, o.x = 5, rot = 0.
+   (atan2(-n) - atan2(v) = atan2(-1,0) - atan2(-1,0) = 0 for v = (0,-1).)
+
+   The `along` used for the pose is clamped to [0, wallLength] — a DISPLAY
+   clamp like displayedOpening's: the stored value is never rewritten by a
+   length edit, so lengthening the wall again restores the position. */
+const ANCHOR_EDGES = {back:{x:0,y:-1}, front:{x:0,y:1}, left:{x:-1,y:0}, right:{x:1,y:0}};
+function isAnchorEdge(e){ return typeof e==="string" && Object.prototype.hasOwnProperty.call(ANCHOR_EDGES, e); }
+function anchorEdgeHalf(o, edge){ return (edge==="left" || edge==="right") ? o.w/2 : o.d/2; }
+
+/* Normalize a persisted anchor: a well-formed {wall, edge, along, gap} (a
+   copy — never aliases the input), else null (the object loads free). */
+function sanitizeAnchor(a){
+  if(!a || typeof a!=="object" || Array.isArray(a)) return null;
+  if(typeof a.wall!=="string" || a.wall.split("|").length!==2 || !isAnchorEdge(a.edge)) return null;
+  if(typeof a.along!=="number" || !isFinite(a.along) || typeof a.gap!=="number" || !isFinite(a.gap)) return null;
+  return {wall:a.wall, edge:a.edge, along:a.along, gap:Math.max(0, a.gap)};
+}
+
+/* The interior face an anchor on wall `key` measures from, for room
+   `roomId`: {fr (wallFrame), side ({a,b,len,n,half} from roomInterior, or
+   null when that room's edge is currently degenerate)}. null when the anchor
+   is INVALID: no room, the wall's endpoints are gone, or the wall is not an
+   edge of roomId's loop. Requires an indexed level (f._pt). */
+function anchorFace(f, roomId, key, interiors){
+  if(!roomId) return null;
+  const fr=wallFrame(f,key); if(!fr) return null;
+  const s=wallSides(f, {a:fr.lo, b:fr.hi}, interiors).find(x=>x.room.id===roomId);
+  return s ? {fr, side:s.side} : null;
+}
+
+/* Pure: the {x, y, rot} an object of size o.w×o.d (and o.mirror) takes for
+   `anchor` against `face` — see RESOLVE above. */
+function anchorPose(o, anchor, face){
+  const {fr, side}=face, n=side.n;
+  const along=Math.max(0, Math.min(fr.len, anchor.along));
+  const P=alongToWorld(fr, along);
+  const off=side.half + anchor.gap + anchorEdgeHalf(o, anchor.edge);
+  const u=ANCHOR_EDGES[anchor.edge], mir=o.mirror?-1:1;
+  let rot=(Math.atan2(-n.y,-n.x) - Math.atan2(u.y, u.x*mir))*180/Math.PI;
+  rot=_r6(((rot%360)+360)%360); if(rot>=360) rot=0;
+  return {x:P.x+n.x*off, y:P.y+n.y*off, rot};
+}
+
+/* THE post-mutation pass for anchored objects. For every object with an
+   anchor, recompute its cached x/y/rot from the wall's CURRENT geometry,
+   roomId's interior face (effThickness, so a thickness change moves it) and
+   the edge. An anchor that is no longer valid — wall gone, or no longer an
+   edge of roomId's loop (including roomId null / room deleted) — is set to
+   null: the object becomes free at its last resolved position. A merely
+   degenerate face (zero-length wall, collapsed room — e.g. mid-drag) keeps
+   the anchor and the last cached pose instead of unanchoring.
+   Hooked into markDirty() (js/state.js), so it runs after every commit(),
+   undo, load and drag end, and is called directly by the drag handlers that
+   move geometry live (js/tools.js) — never from inside render(). */
+function resolveObjects(f){
+  if(!f || !Array.isArray(f.objects) || !f.objects.length || !f._pt) return;
+  const interiors=new Map();
+  f.objects.forEach(o=>{
+    if(o.anchor==null) return;
+    const a=sanitizeAnchor(o.anchor);
+    const face=a && anchorFace(f, o.roomId, a.wall, interiors);
+    if(!face){ o.anchor=null; return; }
+    if(!face.side || face.fr.len<1e-9) return;
+    Object.assign(o, anchorPose(o, a, face));
+  });
+}
+
+/* Default anchor for putting object `o` against wall `key` (the "Measure
+   from wall…" pick and the auto-anchor on drop):
+   - edge: the one whose outward normal (at the object's current rot/mirror)
+     points most directly at the wall (most anti-parallel to n) — i.e. the
+     side of the box already facing that wall;
+   - along: the object's current center projected onto the wall, clamped to
+     the wall's length;
+   - gap: the current perpendicular distance from the interior face to that
+     edge once it is squared up (center distance minus the edge's
+     half-extent), clamped to >= 0 — so anchoring keeps the center where it
+     is (apart from squaring the rotation) unless the box was poking into
+     the wall.
+   Also returns `rawGap` (unclamped) and `skew` (degrees the object would
+   rotate to square up). null if the anchor wouldn't be valid (see
+   anchorFace), the face is degenerate, or the wall is open. */
+function defaultAnchorFor(f, o, key, interiors){
+  const face=anchorFace(f, o.roomId, key, interiors);
+  if(!face || !face.side || face.fr.len<1e-9) return null;
+  if(isOpenWall(f, {a:face.fr.lo, b:face.fr.hi})) return null;
+  const n=face.side.n, rad=(o.rot||0)*Math.PI/180, cos=Math.cos(rad), sin=Math.sin(rad), mir=o.mirror?-1:1;
+  let edge=null, best=-Infinity;
+  for(const e of ["back","front","left","right"]){
+    const u=ANCHOR_EDGES[e], mx=u.x*mir;
+    const m={x:mx*cos-u.y*sin, y:mx*sin+u.y*cos};          // same transform as objectLocalToScreen
+    const facing=-(m.x*n.x+m.y*n.y);
+    if(facing>best+1e-9){ best=facing; edge=e; }
+  }
+  const fr=face.fr;
+  const along=_r6(Math.max(0, Math.min(fr.len, worldToAlong(fr, o))));
+  const dist=(o.x-fr.A.x)*n.x + (o.y-fr.A.y)*n.y;          // center → centerline, toward the room
+  const rawGap=dist - face.side.half - anchorEdgeHalf(o, edge);
+  const anchor={wall:key, edge, along, gap:_r6(Math.max(0, rawGap))};
+  const pose=anchorPose(o, anchor, face);
+  let skew=Math.abs((((pose.rot-(o.rot||0))%360)+540)%360-180);
+  return {anchor, rawGap, skew};
+}
+
+/* Anchor `o` to wall `key` (spec fields override the defaults above) and
+   resolve it immediately. Refused (false, nothing changed) if the wall is
+   open, isn't an edge of o's room, or is degenerate. Pure mutator — callers
+   wrap it in commit(). */
+function anchorObject(f, o, key, spec){
+  const def=defaultAnchorFor(f, o, key); if(!def) return false;
+  const a={...def.anchor};
+  if(spec){
+    if(isAnchorEdge(spec.edge)) a.edge=spec.edge;
+    if(typeof spec.along==="number" && isFinite(spec.along)) a.along=spec.along;
+    if(typeof spec.gap==="number" && isFinite(spec.gap)) a.gap=Math.max(0, spec.gap);
+  }
+  o.anchor=a;
+  resolveObjects(f);
+  return o.anchor!=null;
+}
+/* Edit an anchored object's edge/along/gap with the same clamping the drag
+   uses: along into [0, wallLength], gap >= 0. Returns false if `o` isn't
+   anchored (or its anchor is no longer valid). */
+function updateAnchor(f, o, patch){
+  if(!o || !o.anchor) return false;
+  const face=anchorFace(f, o.roomId, o.anchor.wall); if(!face){ o.anchor=null; return false; }
+  if(patch.edge!=null){ if(!isAnchorEdge(patch.edge)) return false; o.anchor.edge=patch.edge; }
+  if(patch.along!=null){ if(!isFinite(patch.along)) return false; o.anchor.along=_r6(Math.max(0, Math.min(face.fr.len, patch.along))); }
+  if(patch.gap!=null){ if(!isFinite(patch.gap)) return false; o.anchor.gap=_r6(Math.max(0, patch.gap)); }
+  resolveObjects(f);
+  return true;
+}
+/* Explicit "Unanchor": drop the anchor, leaving x/y/rot at their last
+   resolved values (the object is free from then on). */
+function unanchorObject(o){ if(!o || !o.anchor) return false; o.anchor=null; return true; }
+
+/* remapWallRefs' half for object anchors (called from its top, for every
+   op kind, with the same op shapes — see that function's comment). Rules,
+   mirroring the openings handling:
+   - split:  the half containing the object's CENTER (`along` < split
+             position → the half touching lo, else the hi half), re-based
+             into that half's frame.
+   - merge:  an anchor whose wall is a contributor follows it to its new key;
+             if that old key lands on several new keys (corner delete on a
+             shared wall), the candidate must be an edge of the object's own
+             room loop (nearest to the center if still ambiguous).
+   - detach: the anchor follows the new wall key belonging to its OWN
+             roomId: if that room's loop still has the old key it stays,
+             else it moves to the paired new key that IS in its loop.
+   Always re-based with rebaseAlong (world point → projection), so reversed
+   frames and positional shifts need no special-casing. A wall that vanishes
+   (merge to null, no candidate in the room's loop) is left alone here —
+   resolveObjects then unanchors it. Runs after loops are rewritten, before
+   points are gc'd, like the rest of remapWallRefs. */
+function _remapAnchors(f, op){
+  const objs=(f.objects||[]).filter(o=>o.anchor && typeof o.anchor.wall==="string" && isFinite(o.anchor.along));
+  if(!objs.length) return;
+  const roomKeys=o=>{ const r=f.rooms.find(r=>r.id===o.roomId); return new Set(r ? loopWallKeys(r.loop).filter(Boolean) : []); };
+  const move=(a, to)=>{ a.along=_r6(rebaseAlong(f, a.wall, a.along, to)); a.wall=to; };
+  if(op.kind==="split"){
+    const K=wallKey(op.a,op.b), fr=wallFrame(f,K), M=_ptAny(f,op.mid);
+    if(!fr || !M) return;
+    const kLo=wallKey(fr.lo, op.mid), kHi=wallKey(op.mid, fr.hi);
+    const s=Math.max(0, Math.min(fr.len, worldToAlong(fr, M)));
+    objs.forEach(o=>{ if(o.anchor.wall===K) move(o.anchor, o.anchor.along < s ? kLo : kHi); });
+  } else if(op.kind==="detach"){
+    const byOld=new Map();
+    op.pairs.forEach(([o,n])=>{ if(!o || !n || o===n) return; if(!byOld.has(o)) byOld.set(o,[]); byOld.get(o).push(n); });
+    objs.forEach(o=>{
+      const a=o.anchor, ns=byOld.get(a.wall); if(!ns) return;
+      const keys=roomKeys(o); if(keys.has(a.wall)) return;     // its room still owns the original
+      const to=ns.find(n=>keys.has(n)); if(to) move(a, to);
+    });
+  } else if(op.kind==="merge"){
+    const targets=new Map();
+    op.pairs.forEach(([o,n])=>{ if(!o || !n) return; if(!targets.has(o)) targets.set(o,new Set()); targets.get(o).add(n); });
+    objs.forEach(o=>{
+      const a=o.anchor, ns=targets.get(a.wall); if(!ns) return;
+      const keys=roomKeys(o);
+      const cand=[...ns].filter(n=>keys.has(n)).map(n=>wallFrame(f,n)).filter(Boolean);
+      const src=wallFrame(f,a.wall); if(!cand.length || !src) return;
+      const C=alongToWorld(src, a.along);
+      let best=cand[0], bd=Infinity;
+      cand.forEach(fr=>{ const t=Math.max(0,Math.min(fr.len,worldToAlong(fr,C))), P=alongToWorld(fr,t);
+        const d=Math.hypot(P.x-C.x,P.y-C.y); if(d<bd-1e-9){ bd=d; best=fr; } });
+      move(a, best.key);
+    });
+  }
 }
 
 /* Ensure the global id counters are above every numeric id already present,

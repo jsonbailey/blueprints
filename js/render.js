@@ -266,7 +266,7 @@ function drawLevel(f, {shadow}){
   const gOpenings = el("g",{});
   if(!shadow) drawOpenings(f, gOpenings, interiors);
 
-  // free-placed objects (ARCHITECTURE.md item 5, free-placement half — active
+  // placed objects, free and wall-anchored (ARCHITECTURE.md item 5 — active
   // level only; see drawObjects below for why the shadow view skips them)
   const gObjects = el("g",{});
   if(!shadow) drawObjects(f, gObjects);
@@ -330,8 +330,11 @@ function drawOpenings(f, g, interiors){
   });
 }
 
-/* ---------- free-placed objects (ARCHITECTURE.md item 5, free-placement
-   half — wall-anchored placement is a separate, later task) ----------
+/* ---------- placed objects (ARCHITECTURE.md item 5) ----------
+   Free and wall-anchored objects draw identically, through
+   objectLocalToScreen: an anchored object's x/y/rot are the cache
+   resolveObjects (js/model.js) keeps up to date, so nothing here re-derives
+   its pose.
    Not drawn in the shadow view (not required by ARCHITECTURE.md, and keeps
    the shadow view to the same "pure wall geometry, no detail" treatment
    corner handles/openings already get there). */
@@ -356,7 +359,7 @@ function objectLocalToScreen(o){
   };
 }
 
-/* Selectable, draggable plan symbol for each free object (js/catalog.js's
+/* Selectable, draggable plan symbol for each object (js/catalog.js's
    FIXTURE_TYPES draws the symbol itself; this adds the type-name label and
    wires selection/drag). A transparent hit polygon covering the object's
    full w×d box is appended LAST — same trick drawOpenings uses for its hit
@@ -380,6 +383,25 @@ function drawObjects(f, g){
     const corners=[P(-o.w/2,-o.d/2),P(o.w/2,-o.d/2),P(o.w/2,o.d/2),P(-o.w/2,o.d/2)];
     const hit=el("polygon",{points:corners.map(p=>p.join(",")).join(" "),
       fill:"transparent", stroke:isSel?"var(--markup)":"none","stroke-width":1.5,"stroke-dasharray":isSel?"4 4":"none"});
+    // anchored + selected: a dashed gap dimension from the wall's interior
+    // face to the anchored edge's midpoint (x/y/rot are already resolved —
+    // markDirty/drags ran resolveObjects — so this only reads the cache)
+    if(isSel && o.anchor){
+      const face=anchorFace(f, o.roomId, o.anchor.wall);
+      if(face && face.side){
+        const u=ANCHOR_EDGES[o.anchor.edge], h=anchorEdgeHalf(o, o.anchor.edge);
+        const [ex,ey]=P(u.x*h, u.y*h);                       // anchored edge midpoint (local → screen)
+        const n=face.side.n, s=o.anchor.gap*view.scale;     // world and screen share orientation
+        const fx=ex-n.x*s, fy=ey-n.y*s;                      // its foot on the interior face
+        og.appendChild(el("line",{x1:fx,y1:fy,x2:ex,y2:ey,stroke:"var(--markup)","stroke-width":1.2,"stroke-dasharray":"3 3","pointer-events":"none"}));
+        og.appendChild(el("circle",{cx:fx,cy:fy,r:2.5,fill:"var(--markup)","pointer-events":"none"}));
+        const t=el("text",{x:(fx+ex)/2+n.y*10, y:(fy+ey)/2-n.x*10, "text-anchor":"middle","dominant-baseline":"central",
+          "font-family":"var(--mono)","font-size":10, fill:"var(--markup)",
+          "paint-order":"stroke","stroke":"var(--paper)","stroke-width":3,"pointer-events":"none"});
+        t.textContent = fmtInches(o.anchor.gap);
+        og.appendChild(t);
+      }
+    }
     hit.style.cursor="move";
     hit.dataset.object=o.id;
     hit.addEventListener("pointerdown",(e)=>startDragObject(e,o.id));
