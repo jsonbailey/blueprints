@@ -2,7 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
-const { createDomStub } = require("./dom-stub");
+const { createDomStub, createLocalStorageStub } = require("./dom-stub");
 
 const ROOT = path.join(__dirname, "..");
 
@@ -36,6 +36,11 @@ function loadApp() {
     Blob: function Blob() {},
     FileReader: function FileReader() { this.readAsText = function () {}; },
     setTimeout, clearTimeout, setInterval, clearInterval,
+    // Fresh, isolated in-memory store per loadApp() call (test/dom-stub.js) —
+    // the autosave suite (test/autosave.test.js) needs a real
+    // getItem/setItem/key/length-shaped localStorage, and nothing here may
+    // leak state between tests via a real persistent backing file.
+    localStorage: createLocalStorageStub(),
   };
   ctx.globalThis = ctx;
   ctx.window.document = document;

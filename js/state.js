@@ -54,6 +54,7 @@ function commitCaptured(d){
 function markDirty(){
   data.levels.forEach(resolveObjects);
   render(); renderInspector();
+  triggerAutosave();   // debounced local-storage autosave (js/storage.js, item 6)
 }
 /* Wrap a single undoable mutation: snapshot the pre-state, run the mutation,
    then re-render. This is the one place most call sites should route

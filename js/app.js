@@ -3,10 +3,15 @@
 /* ---------- project name ---------- */
 const projNameEl = document.getElementById("projectName");
 let projectName = projNameEl.textContent.trim() || "Untitled Plan";
+/* setProjectName does NOT flow through commit()/markDirty() (it mutates UI
+   text directly, no SVG re-render needed) — so it's the one mutation path
+   that needs its own explicit autosave trigger (js/storage.js, item 6);
+   every other change is covered by markDirty()'s hook in js/state.js. */
 function setProjectName(name){
   projectName = (name||"").trim() || "Untitled Plan";
   projNameEl.textContent = projectName;
   document.title = projectName + " — Plan Editor";
+  triggerAutosave();
 }
 setProjectName(projectName);
 projNameEl.addEventListener("keydown", e=>{
@@ -14,6 +19,21 @@ projNameEl.addEventListener("keydown", e=>{
   else if(e.key==="Escape"){ e.preventDefault(); setProjectName(projectName); projNameEl.blur(); }
 });
 projNameEl.addEventListener("blur", ()=> setProjectName(projNameEl.textContent));
+
+/* ---------- resume the last-open project (ARCHITECTURE.md item 6) ----------
+   js/state.js initializes `data` to a plain freshData() at its own top
+   level (it has to — it doesn't know about localStorage); replace that with
+   whatever loadStartupProject() (js/storage.js) resolves, same as opening a
+   file replaces `data` in place. This runs after setProjectName above has
+   set up `projNameEl`'s listeners, and it reuses setProjectName itself so
+   the titleblock/document.title stay in sync, exactly like the Open-file
+   handler does. */
+(function resumeStartupProject(){
+  const started = loadStartupProject();
+  data = started.data;
+  setProjectName(started.name);
+  sel = {type:null, id:null};
+})();
 
 let movingEnd = "b";                 // which wall endpoint moves when length is edited
 let cornerRoom = null;               // which room's corner is targeted for angle ops
