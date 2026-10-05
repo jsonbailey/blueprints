@@ -25,6 +25,10 @@ behavior belongs in SPEC.md).
 6. **Local storage autosave** — debounced, reuses `schemaVersion`/`migrateData`.
 7. **Hamburger menu + multi-project switcher** — backed by item 6.
 
+**Item: join rooms** — merge two adjacent rooms into one, the geometric
+inverse of the Cut tool. *Shipped* — see SPEC.md; "Item: join rooms" below
+stays as reference for any later feature that touches room-merge geometry.
+
 (Numbering starts at 2.5 because earlier items have shipped and moved to
 SPEC.md. Keep remaining numbers stable as items complete — don't renumber —
 since they're cross-referenced throughout this document and in commit
@@ -228,3 +232,77 @@ level.objects = [{
   anchoring once item 3/4 land. Never ship anchors measured from the wall
   centerline and redefine their meaning later — that silently breaks saved
   data.
+
+## Item: join rooms
+
+**Status:** shipped (see SPEC.md). `joinRooms(f, roomA, roomB)` in
+`js/model.js`, UI in `js/inspector.js`'s `renderRoomInspector`
+(`adjacentRooms` + the "Join with adjacent room" picker).
+
+Merges two adjacent rooms into one — the geometric inverse of the Cut tool
+(`cutRoom`): where Cut subtracts one room's shape from overlapping rooms via
+the vendored polygon-clipping library's `difference`, join **unions** two
+rooms' shapes via that same library's `union`. `PC.union(geomA, geomB)`
+takes the identical two-arrays-of-rings MultiPolygon shape as
+`intersection`/`difference` and returns the same array-of-polygons shape
+(`[[outerRing, ...holeRings], ...]`) — confirmed empirically (`union` isn't
+exercised anywhere else in this file), not assumed from the other two
+operations' signatures.
+
+- **No "largest piece" fallback, unlike `cutRoom`.** Cut always has a
+  sensible fallback for a degenerate result (keep the largest piece,
+  flag `dropped`) because subtracting a shape can legitimately split what's
+  left. A join has no equivalent: the whole point of the operation is "these
+  two rooms become one room", so a degenerate union is a flat refusal, with
+  a specific reason string the caller can show:
+  - `result.length !== 1` → the rooms don't share a boundary at all (0
+    polygons — shouldn't normally happen) or came back as more than one
+    piece (the common case: the two rooms don't touch, or touch only at a
+    single point/corner, which `PC.union` reports as two still-separate
+    polygons rather than one).
+  - `result[0].length !== 1` → the union has one piece but also a hole ring
+    — an interlocking/C-shaped pair of rooms can trap an uncovered pocket
+    between them. The single-loop room model can't represent a hole, so
+    this is refused rather than silently dropping the hole or keeping only
+    the outer ring.
+- **Locked rooms refuse**, same precedent as `cutRoom` skipping locked rooms
+  (merging a locked room's geometry would violate what locking guarantees).
+- **One room survives.** The caller picks which argument is `roomA`
+  (survivor) vs. `roomB` (removed) — the UI passes the room whose inspector
+  is open as `roomA`. The survivor keeps its own `name`/`kind`/`locked`;
+  `roomB` is deleted from `f.rooms`.
+- **Objects reparent, they don't orphan.** Every object with `roomId ===
+  roomB.id` is reassigned to `roomA.id` — unlike a room *cutRoom* fully
+  consumes (which has nowhere to go and orphans its objects), a join always
+  has a clear successor room. An anchored object whose wall was the
+  dissolved shared wall becomes unanchored on the next `resolveObjects()`
+  pass automatically (that wall is no longer an edge of the merged loop) —
+  no special-case code needed, same generic invalidity handling item 5
+  already has.
+- **No `remapWallRefs` call, deliberately** — same reasoning `cutRoom`
+  already documents for the same omission: the merged loop is rebuilt from
+  the union's raw ring via `ringToLoop`, which reuses existing corners
+  (`getOrMakePoint` welds within `MERGE_TOL`) wherever the union's boundary
+  coincides with one. A wall on the OUTER boundary that survives unchanged
+  keeps its existing endpoint-id pair and therefore keeps its `wallProps`
+  entry (thickness override, openings) automatically — nothing re-keys it,
+  since the key is just that unchanged id pair. The wall that was SHARED
+  between the two rooms dissolves (it's interior to the merged room now, so
+  it's simply absent from the new loop); `deriveWalls`' existing orphan-prune
+  drops its now-dead `wallProps` entry, openings included. Accepted gap,
+  same as Cut's "openings are lost on edges that cutRoom recreates".
+- **UI**: `adjacentRooms(f, room)` finds every other room sharing a wall with
+  the selected room by walking its loop's edges through `wallSides` (which
+  takes a plain `{a,b}`, not necessarily a real `f.walls` entry). Presented
+  as a `<select>` + "Join" button in the room inspector, same picker
+  convention as the corner-angle room dropdown. Not wrapped in `commit()`
+  directly — same one-off exception `cutRoomBtn`'s own handler already
+  makes: a refused join must not land on the undo stack, so the handler uses
+  a manual `snapshot()` / `history.pop()` on refusal instead, and reports
+  the refusal reason via `alert()` (matching `cutRoomBtn`'s own `alert()` on
+  `res.err`). On success, selects the surviving merged room (same pattern
+  `divideWall`'s handler uses to select the new midpoint).
+- **Out of scope** (explicitly, not a gap to revisit casually): joining more
+  than two rooms in one action (call this again for a third room), a
+  canvas click-to-pick-second-room interaction mode (the inspector picker is
+  the whole UI surface).
