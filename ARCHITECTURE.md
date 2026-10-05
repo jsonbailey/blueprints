@@ -20,6 +20,8 @@ behavior belongs in SPEC.md).
 5. **Room-relative object placement** — furniture/fixture catalog, with
    optional wall-anchored placement (distance + position derived from a
    host wall's interior face). Depends on items 3-4 — see "Item 5" below.
+   *Shipped* (free placement, then anchors) — see SPEC.md; the section
+   below stays until it's trimmed to whatever later items still reuse.
 6. **Local storage autosave** — debounced, reuses `schemaVersion`/`migrateData`.
 7. **Hamburger menu + multi-project switcher** — backed by item 6.
 

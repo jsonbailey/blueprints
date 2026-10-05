@@ -115,6 +115,29 @@ build a plan by adding rooms and levels in-app or opening a previously saved
   slide it along its wall (grid-snapped, Alt bypasses; stops at the wall ends
   and 2" from neighbours). All undoable. Openings aren't drawn in the shadow
   view.
+- Fixtures & furniture: `level.objects = [{id, type, roomId, w, d, mirror,
+  x, y, rot, anchor}]` from the `js/catalog.js` fixture list, sized per
+  instance. A free object (`anchor: null`) is dragged freely (grid-snapped),
+  is reparented to the room containing it on drop, and moves with a
+  whole-room translate/nudge of any room in its welded cluster; reshaping a
+  room leaves it in place. An **anchored** object has
+  `anchor = {wall, edge, along, gap}`: `wall` is a wall key, `edge` is the
+  object edge facing it (`back`/`front` = its local depth ends `ld = ∓d/2`,
+  `left`/`right` = its local width ends `lx = ∓w/2`, before mirroring),
+  `along` is the object's center along the wall from the key's lower id
+  (the openings convention), and `gap` is the distance from the wall's
+  interior face on `roomId`'s side to that edge. Its `x/y/rot` are a cache
+  rewritten by `resolveObjects` after every change (so it follows the wall
+  as it moves, tilts or changes thickness, and is never carried by a room
+  translate); if the wall stops being an edge of `roomId`'s loop it becomes
+  free where it last was. Anchors re-key through split/merge/detach like
+  openings (detach and corner-delete keep it on its own room's wall).
+  Anchor via the inspector's "Measure from wall…" (then click a wall of the
+  object's room; the facing edge, current along and current gap are kept)
+  or by dropping a squared-up free object flush against a wall (Alt
+  bypasses). Dragging an anchored object edits only `along` (clamped to the
+  wall) and `gap` (≥ 0), with a live `42" from wall` readout; rotation is
+  locked while anchored, and "Unanchor" frees it in place. All undoable.
 - Interior geometry: each room has an interior-offset polygon — every edge
   pushed toward that room's interior (decided by the room's own signed
   area, not an assumed winding) by half its wall's effective thickness,
