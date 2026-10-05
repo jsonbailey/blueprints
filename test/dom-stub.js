@@ -115,4 +115,23 @@ function createDomStub() {
   return { document, window, svgEl, makeElement };
 }
 
-module.exports = { createDomStub, makeElement };
+/* A tiny in-memory localStorage stand-in for the autosave suite
+   (test/autosave.test.js) — real getItem/setItem/removeItem/key/length
+   semantics (string-coerced values, null for a missing key), backed by a
+   plain Map so each call to this factory gets its own isolated store with
+   nothing persisted across tests. createDomStub() does NOT wire this in by
+   itself (most tests don't need it); callers that do should set it on the
+   vm context themselves — see test/harness.js. */
+function createLocalStorageStub() {
+  const store = new Map();
+  return {
+    getItem(key) { return store.has(key) ? store.get(key) : null; },
+    setItem(key, value) { store.set(String(key), String(value)); },
+    removeItem(key) { store.delete(key); },
+    clear() { store.clear(); },
+    key(i) { return Array.from(store.keys())[i] ?? null; },
+    get length() { return store.size; },
+  };
+}
+
+module.exports = { createDomStub, makeElement, createLocalStorageStub };

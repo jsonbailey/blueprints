@@ -211,9 +211,23 @@ build a plan by adding rooms and levels in-app or opening a previously saved
 ### State
 
 - Undo (lazy — only real changes; adding/renaming a level is undoable),
-  Reset (back to a single blank level), and Save/Open JSON for local
-  persistence. No browser storage is used — everything round-trips through
-  a downloaded `.json` file.
+  Reset (back to a single blank level), and Save/Open JSON for an explicit,
+  user-initiated file-based export/import, independent of autosave below.
+- **Local storage autosave**: every change (any `commit()`-driven mutation,
+  switching the active level, and renaming the project) is written to the
+  browser's `localStorage` about 1.5s after the last change, under keys
+  namespaced `blueprints:` — `blueprints:projects` (a lightweight index of
+  `{id, name, updatedAt}`), `blueprints:project:<id>` (the full plan, same
+  shape as a saved `.json` file), and `blueprints:currentProjectId`.
+  Reopening the page resumes the last-open project (including its active
+  level), migrating an older-schema autosave the same way an old file is
+  migrated on open; a first-ever visit, or anything missing/corrupt in
+  storage, starts fresh instead. `localStorage` being unavailable (private
+  browsing, quota exceeded, disabled storage) degrades silently — editing
+  still works, it just isn't autosaved. Opening a `.json` file or using
+  Reset overwrites the *current* project slot, not a new one. Multiple tabs
+  open on the same project is last-write-wins (no cross-tab sync). See
+  ARCHITECTURE.md item 6 for the full design.
 - Saved JSON shape: `{name, schemaVersion, activeLevelId, levels:[...]}`
   (`name` is the project name; levels are stored without internal indices).
 - **Schema versioning**: every persisted plan carries an integer
