@@ -25,8 +25,17 @@ function scriptOrder() {
    Throws if any file fails to parse/execute at the top level — that's the
    main class of bug this harness catches (see dom-stub.js's header comment
    for what it does and doesn't verify). */
-function loadApp() {
+/* `opts.localStorageSeed`, an optional {key: stringValue} object, is written
+   into the stub store BEFORE the app bundle (and so its startup/autosave
+   code) ever runs — this is how the autosave suite (test/autosave.test.js)
+   simulates "reopening the page with an existing blueprints:* project
+   already in storage" rather than always exercising the fresh-project path. */
+function loadApp(opts) {
   const { document, window, svgEl, makeElement } = createDomStub();
+  const localStorage = createLocalStorageStub();
+  if (opts && opts.localStorageSeed) {
+    for (const [k, v] of Object.entries(opts.localStorageSeed)) localStorage.setItem(k, v);
+  }
   const ctx = {
     document, window, console, Math, JSON, Array, Object, String, Number,
     Boolean, Map, Set, WeakMap, WeakSet, Symbol,
@@ -40,7 +49,7 @@ function loadApp() {
     // the autosave suite (test/autosave.test.js) needs a real
     // getItem/setItem/key/length-shaped localStorage, and nothing here may
     // leak state between tests via a real persistent backing file.
-    localStorage: createLocalStorageStub(),
+    localStorage,
   };
   ctx.globalThis = ctx;
   ctx.window.document = document;
