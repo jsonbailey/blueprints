@@ -751,6 +751,69 @@ function cutRoom(f, cutter){
   return {changed, dropped, err:false};
 }
 
+/* ---- join tool: merge two adjacent rooms into one room (ARCHITECTURE.md
+   "Item: join rooms") — the geometric inverse of cutRoom above: instead of
+   subtracting one room's shape from another (PC.difference), this unions
+   the two rooms' shapes into one (PC.union). Confirmed empirically (the
+   vendored lib's union isn't tested anywhere else in this file) that
+   PC.union takes the exact same two-arrays-of-rings MultiPolygon shape as
+   intersection/difference and returns the same array-of-polygons shape
+   (each polygon = [outerRing, ...holeRings]):
+     PC.union([ringA], [ringB]) -> [[outerRing, ...holes], ...morePolygons]
+
+   Unlike cutRoom, which falls back to "keep the largest piece" when a cut
+   splits a room or leaves a hole (there's always a sensible largest-piece
+   fallback for a subtraction), a join has none — the whole point of the
+   operation is "these two become one room" — so it REFUSES outright unless
+   the union comes back as exactly one polygon with no holes:
+     result.length === 1   (not 0 - nothing to union; not >1 - the two rooms
+                             don't actually touch, or touch only at a single
+                             point, so they stay two separate pieces)
+     result[0].length === 1  (no extra hole ring - a shared-vertex-only touch
+                              or an enclosing/interlocking shape can leave an
+                              uncovered pocket between the two rooms, which
+                              the single-loop room model can't represent)
+   Verified against hand-built cases (see test/joinrooms.test.js): two
+   rectangles sharing a full edge -> 1 polygon, 1 ring; two rooms that don't
+   touch, or touch at one corner only -> 2 polygons; two C-shaped rooms whose
+   union traps a hole -> 1 polygon with 2 rings. */
+function joinRooms(f, roomA, roomB){
+  const PC=window.polygonClipping; if(!PC) return {ok:false, reason:"Polygon library unavailable."};
+  if(!roomA || !roomB) return {ok:false, reason:"Pick two rooms."};
+  if(roomA.id===roomB.id) return {ok:false, reason:"Pick two different rooms."};
+  if(roomA.locked || roomB.locked) return {ok:false, reason:"A locked room can't be joined — unlock it first."};
+  let u;
+  try{ u=PC.union([loopRing(f,roomA.loop)], [loopRing(f,roomB.loop)]); }catch(e){ return {ok:false, reason:"Join failed (geometry error)."}; }
+  if(u.length!==1) return {ok:false, reason:"Rooms must share an edge — they don't touch, or touch only at a point."};
+  if(u[0].length!==1) return {ok:false, reason:"Join would leave a hole — rooms must share a full edge, not just overlap at a corner."};
+  const newLoop=ringToLoop(f, u[0][0]);
+  if(newLoop.length<3) return {ok:false, reason:"Join produced a degenerate shape."};
+  // roomA survives (keeps its own name/kind/locked); roomB is removed and its
+  // objects are reparented to roomA — unlike a room fully consumed by cutRoom
+  // (which has nowhere to go and is orphaned), a join always has a clear
+  // successor room.
+  roomA.loop = newLoop;
+  const bId=roomB.id;
+  f.rooms = f.rooms.filter(r=>r.id!==bId);
+  if(f.objects) f.objects.forEach(o=>{ if(o.roomId===bId) o.roomId=roomA.id; });
+  // No remapWallRefs here, deliberately (same reasoning cutRoom documents for
+  // not calling it): the merged loop is rebuilt from the union's raw ring via
+  // ringToLoop, which reuses existing corners (getOrMakePoint welds within
+  // MERGE_TOL) wherever the union's boundary coincides with one. A wall on
+  // the OUTER boundary that survives unchanged keeps its existing endpoint-id
+  // pair, and therefore keeps its wallProps entry (thickness override,
+  // openings) automatically — nothing references it by the wrong key, since
+  // the key is just that unchanged id pair. The wall that was SHARED between
+  // roomA and roomB dissolves (it's interior to the merged room, so it's
+  // simply absent from the new loop); deriveWalls' existing orphan-prune
+  // drops its now-dead wallProps entry, openings included — an accepted gap,
+  // consistent with cutRoom's "openings are lost on edges that cutRoom
+  // recreates".
+  f._pt=new Map(f.points.map(p=>[p.id,p]));
+  gcPoints(f); deriveWalls(f);
+  return {ok:true, room:roomA};
+}
+
 /* Mint a new level (fresh unique id, visible) whose geometry is built from
    seed rectangles — [] for a blank level. */
 function makeLevel(name, rects){
